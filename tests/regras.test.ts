@@ -7,6 +7,8 @@ import { calcularHashChave, gerarChaveApi } from "../src/utils/chaveApi.js";
 import { regressaoLinear, resumir } from "../src/utils/estatistica.js";
 import { preverInventario } from "../src/services/analise/vidaUtilService.js";
 import type { PrevisaoDoTipo } from "../src/services/analise/vidaUtilService.js";
+import { paraCsv } from "../src/utils/csv.js";
+import { assinar } from "../src/services/webhookService.js";
 
 test("CNPJ válido com ou sem máscara vira só números", () => {
     assert.equal(validarCnpj("11.222.333/0001-81"), "11222333000181");
@@ -88,4 +90,22 @@ test("inventário do parceiro: anos restantes, ano previsto e situação", () =>
     assert.deepEqual(situacoes, ["VIDA_UTIL_ESGOTADA", "TROCAR_EM_ATE_1_ANO", "EM_USO_NORMAL", "SEM_PREVISAO"]);
     assert.equal(resultado.equipamentos[2]!.anosRestantes, 6);
     assert.equal(resultado.equipamentos[2]!.anoPrevistoInservivel, anoAtual - 2 + 8);
+});
+
+test("CSV: separador ;, vírgula decimal, aspas escapadas, colunas na ordem pedida e objetos achatados", () => {
+    const csv = paraCsv([{ nome: 'PAT;3 "x"', valor: { media: 1.5 } }, { nome: "B", valor: { media: 2 } }], ["valor.media", "nome"]);
+    const linhas = csv.replace("\uFEFF", "").split("\n");
+
+    assert.equal(linhas[0], "valor.media;nome");
+    assert.equal(linhas[1], '1,5;"PAT;3 ""x"""');
+    assert.equal(linhas[2], "2;B");
+});
+
+test("webhook: assinatura HMAC-SHA256 muda se o corpo ou o segredo mudar", () => {
+    const assinatura = assinar('{"evento":"relatorio.concluido"}', "whsec_teste");
+
+    assert.match(assinatura, /^[0-9a-f]{64}$/);
+    assert.equal(assinatura, assinar('{"evento":"relatorio.concluido"}', "whsec_teste"));
+    assert.notEqual(assinatura, assinar('{"evento":"relatorio.falhou"}', "whsec_teste"));
+    assert.notEqual(assinatura, assinar('{"evento":"relatorio.concluido"}', "outro"));
 });

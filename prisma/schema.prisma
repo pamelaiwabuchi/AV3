@@ -121,6 +121,10 @@ model Organizacao {
   dataCadastro      DateTime @default(now())
   ativo             Boolean  @default(true)
   versao            Int      @default(1)
+  // Webhook: endereço (https) do sistema do parceiro, avisado quando um relatório termina.
+  // O segredo assina cada aviso (HMAC), para o parceiro conferir que veio do greencode.
+  webhookUrl        String?
+  webhookSegredo    String?
 
   contratos  Contrato[]
   lotes      Lote[]
@@ -312,22 +316,25 @@ model Auditoria {
 // relatórios antigos ficam disponíveis para consulta histórica.
 // O resultado completo fica em JSON (cada relatório tem um formato diferente).
 model RelatorioGerado {
-  id              String          @id @default(uuid()) @db.Uuid
-  tipo            TipoRelatorio
-  origem          OrigemRelatorio
-  status          StatusRelatorio @default(PENDENTE)
+  id                String          @id @default(uuid()) @db.Uuid
+  tipo              TipoRelatorio
+  origem            OrigemRelatorio
+  status            StatusRelatorio @default(PENDENTE)
   // Parâmetros do pedido (período, organização, lista de equipamentos do parceiro...).
-  parametros      Json
-  periodoInicio   DateTime?       @db.Date
-  periodoFim      DateTime?       @db.Date
+  parametros        Json
+  periodoInicio     DateTime?       @db.Date
+  periodoFim        DateTime?       @db.Date
   // Preenchida quando o relatório é só de uma organização (pedido do parceiro ou filtro).
-  organizacaoId   String?         @db.Uuid
-  solicitadoPorId String?         @db.Uuid
-  dataPedido      DateTime        @default(now())
-  dataConclusao   DateTime?
-  tentativas      Int             @default(0)
-  erro            String?
-  resultado       Json?
+  organizacaoId     String?         @db.Uuid
+  solicitadoPorId   String?         @db.Uuid
+  dataPedido        DateTime        @default(now())
+  dataConclusao     DateTime?
+  tentativas        Int             @default(0)
+  erro              String?
+  resultado         Json?
+  // Aviso ao parceiro (webhook): quando foi entregue, ou o erro da última tentativa.
+  webhookEntregueEm DateTime?
+  webhookErro       String?
 
   organizacao   Organizacao?       @relation(fields: [organizacaoId], references: [id])
   solicitadoPor Usuario?           @relation(fields: [solicitadoPorId], references: [id])

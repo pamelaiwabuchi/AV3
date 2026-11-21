@@ -5,7 +5,9 @@
 // guarda o resultado (CONCLUIDO) ou o erro. Assim a fila só precisa chamar processar(id).
 import type { Prisma } from "../generated/prisma/client.js";
 import type { OrigemRelatorio, TipoEquipamento, TipoRelatorio } from "../generated/prisma/enums.js";
-import { ErroNaoEncontrado, ErroRegraNegocio } from "../errors/erros.js";
+import { ErroApp, ErroNaoEncontrado, ErroRegraNegocio } from "../errors/erros.js";
+import { enfileirarRelatorio } from "../lib/fila.js";
+import { paraCsv } from "../utils/csv.js";
 import * as relatorioAnaliticoRepository from "../repositories/relatorioAnaliticoRepository.js";
 import type { FiltrosRelatorio } from "../repositories/relatorioAnaliticoRepository.js";
 import * as eficienciaService from "./analise/eficienciaService.js";
@@ -124,6 +126,35 @@ export async function processar(id: string, ultimaTentativa = true) {
     }
 }
 
+export async function marcarFalhaDefinitiva(id: string, mensagem: string) {
+    await relatorioAnaliticoRepository.registrarFalha(id, mensagem, true);
+}
+
+// Pedido que vai para a fila (API pública e agendamento). Se a fila estiver fora do ar,
+// o pedido fica FALHOU (não some) e a resposta é 503, para o cliente tentar mais tarde.
+export async function pedirNaFila(pedido: PedidoRelatorio) {
+    const relatorio = await criarPedido(pedido);
+
+    try {
+        await enfileirarRelatorio(relatorio.id);
+    } catch {
+        await marcarFalhaDefinitiva(relatorio.id, "A fila de processamento estava indisponível");
+        throw new ErroApp("A fila de processamento está indisponível no momento. Tente de novo em alguns minutos", 503);
+    }
+
+    return relatorio;
+}
+
+// Relatório automático do dia 1º: eficiência e rentabilidade do mês anterior;
+// a vida útil é recalculada com todos os dados (o modelo se atualiza todo mês).
+export async function pedirAgendado(tipo: "EFICIENCIA" | "RENTABILIDADE" | "VIDA_UTIL") {
+    const hoje = new Date();
+    const inicio = new Date(Date.UTC(hoje.getUTCFullYear(), hoje.getUTCMonth() - 1, 1));
+    const fim = new Date(Date.UTC(hoje.getUTCFullYear(), hoje.getUTCMonth(), 0));
+
+    return pedirNaFila({ tipo, origem: "AGENDADO", inicio, fim });
+}
+
 // Pedido + processamento na hora (relatórios internos, que são rápidos).
 export async function gerarAgora(pedido: PedidoRelatorio) {
     const relatorio = await criarPedido(pedido);
@@ -143,4 +174,43 @@ export async function buscar(id: string) {
     }
 
     return relatorio;
+}
+
+// ---------- download em JSON ou CSV ----------
+
+// O CSV é uma tabela só; cada relatório usa a sua tabela principal, com as colunas
+// nesta ordem. O JSON traz o resultado completo.
+const TABELAS_DO_CSV: Record<TipoRelatorio, { campo: string; colunas: string[] }> = {
+    EFICIENCIA: { campo: "porMes", colunas: ["mes", "lotes", "mediaDias", "medianaDias", "variacaoPercentual"] },
+    RENTABILIDADE: {
+        campo: "porMarcaEModelo",
+        colunas: ["tipo", "marca", "modelo", "valor.quantidade", "valor.media", "valor.mediana", "valor.desvioPadrao", "valor.minimo", "valor.maximo", "valorTotal"],
+    },
+    VIDA_UTIL: {
+        campo: "previsoes",
+        colunas: ["tipoEquipamento", "amostras", "vidaUtilPrevistaAnos", "vidaUtilContabilAnos", "r2", "confianca", "coeficienteAngular", "intercepto", "limiarInservivel", "conclusao"],
+    },
+    VIDA_UTIL_INVENTARIO: {
+        campo: "equipamentos",
+        colunas: ["identificador", "tipo", "marca", "modelo", "anoFabricacao", "idadeAnos", "vidaUtilPrevistaAnos", "anosRestantes", "anoPrevistoInservivel", "situacao"],
+    },
+};
+
+// O arquivo é montado na hora a partir do resultado guardado no banco: não há arquivo
+// em disco para guardar, apagar ou perder (e funciona com vários servidores).
+export function exportar(relatorio: { id: string; tipo: TipoRelatorio; status: string; resultado: unknown }, formato: "json" | "csv") {
+    if (relatorio.status !== "CONCLUIDO") {
+        throw new ErroApp(`O relatório ainda não está pronto (status ${relatorio.status})`, 409);
+    }
+
+    const nome = `relatorio-${relatorio.tipo.toLowerCase()}-${relatorio.id}`;
+    const resultado = relatorio.resultado as Record<string, unknown>;
+
+    if (formato === "csv") {
+        const tabela = TABELAS_DO_CSV[relatorio.tipo];
+        const linhas = (resultado[tabela.campo] ?? []) as Record<string, unknown>[];
+        return { conteudo: paraCsv(linhas, tabela.colunas), tipoConteudo: "text/csv; charset=utf-8", nomeArquivo: `${nome}.csv` };
+    }
+
+    return { conteudo: JSON.stringify(resultado, null, 2), tipoConteudo: "application/json; charset=utf-8", nomeArquivo: `${nome}.json` };
 }

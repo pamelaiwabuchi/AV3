@@ -9,7 +9,30 @@ import { camposEquipamento, camposEquipamentoNovo, obrigatoriosEquipamentoNovo }
 import { exigirAlgumCampo } from "../utils/alteracoes.js";
 import type { DadosEdicaoLote } from "../repositories/loteRepository.js";
 import type { DadosEquipamento, DadosEquipamentoNovo } from "../repositories/equipamentoRepository.js";
-import type { DadosContato } from "../services/publicoService.js";
+import type { DadosContato, PedidoDoParceiro } from "../services/publicoService.js";
+import { TipoEquipamento } from "../generated/prisma/enums.js";
+
+// Até quantos equipamentos o parceiro pode mandar num pedido de previsão do inventário.
+const MAXIMO_DE_ITENS = 5000;
+
+interface CorpoPedirRelatorio {
+    tipo: PedidoDoParceiro["tipo"];
+    inicio?: string;
+    fim?: string;
+    itens?: PedidoDoParceiro["itens"];
+}
+
+interface ConsultaPagina {
+    pagina: number;
+}
+
+interface ConsultaDownload {
+    formato: "json" | "csv";
+}
+
+interface CorpoWebhook {
+    url: string;
+}
 
 interface ParametrosId {
     id: string;
@@ -149,7 +172,64 @@ const esquemaEditarEquipamento = {
     },
 };
 
+const esquemaPedirRelatorio = {
+    body: {
+        type: "object",
+        required: ["tipo"],
+        additionalProperties: false,
+        properties: {
+            // EFICIENCIA: prazos de triagem dos lotes da organização (período padrão: 12 meses).
+            // VIDA_UTIL_INVENTARIO: previsão para a lista de equipamentos que a organização ainda usa.
+            tipo: { type: "string", enum: ["EFICIENCIA", "VIDA_UTIL_INVENTARIO"] },
+            inicio: { type: "string", format: "date" },
+            fim: { type: "string", format: "date" },
+            itens: {
+                type: "array",
+                minItems: 1,
+                maxItems: MAXIMO_DE_ITENS,
+                items: {
+                    type: "object",
+                    required: ["tipo", "anoFabricacao"],
+                    additionalProperties: false,
+                    properties: {
+                        identificador: { type: "string", maxLength: 100 },
+                        tipo: { type: "string", enum: Object.values(TipoEquipamento) },
+                        marca: { type: "string", maxLength: 100 },
+                        modelo: { type: "string", maxLength: 100 },
+                        anoFabricacao: { type: "integer", minimum: 1950, maximum: anoAtual },
+                    },
+                },
+            },
+        },
+    },
+};
+
+const esquemaPagina = {
+    querystring: {
+        type: "object",
+        properties: { pagina: { type: "integer", minimum: 1, default: 1 } },
+    },
+};
+
+const esquemaDownload = {
+    params: esquemaId,
+    querystring: {
+        type: "object",
+        properties: { formato: { type: "string", enum: ["json", "csv"], default: "json" } },
+    },
+};
+
+const esquemaWebhook = {
+    body: {
+        type: "object",
+        required: ["url"],
+        additionalProperties: false,
+        properties: { url: { type: "string", format: "uri", maxLength: 500 } },
+    },
+};
+
 const podeLer = exigirChave("LER_RASTREABILIDADE");
+const podeGerarRelatorios = exigirChave("GERAR_RELATORIOS");
 const podeGerenciar = exigirChave("GERENCIAR_LOTES");
 const podeAtualizarCadastro = exigirChave("ATUALIZAR_CADASTRO");
 
@@ -169,6 +249,49 @@ function enviarPdf(reply: FastifyReply, certificado: { numero: string; pdf: Buff
 }
 
 export async function publicoController(app: FastifyInstance) {
+    // Relatório pesado: responde 202 (aceito) na hora, com o id; o cálculo vai para a fila.
+    app.post<{ Body: CorpoPedirRelatorio }>("/relatorios", { schema: esquemaPedirRelatorio, onRequest: podeGerarRelatorios }, async (request, reply) => {
+        const { tipo, inicio, fim, itens } = request.body;
+        const pedido: PedidoDoParceiro = {
+            tipo,
+            ...(inicio ? { inicio: new Date(inicio) } : {}),
+            ...(fim ? { fim: new Date(fim) } : {}),
+            ...(itens ? { itens } : {}),
+        };
+
+        const relatorio = await publicoService.pedirRelatorio(request.parceiro, pedido);
+        return reply.status(202).header("Location", relatorio.links.status).send(relatorio);
+    });
+
+    app.get<{ Querystring: ConsultaPagina }>("/relatorios", { schema: esquemaPagina, onRequest: podeGerarRelatorios }, async (request) => {
+        return publicoService.listarRelatorios(request.parceiro, request.query.pagina);
+    });
+
+    app.get<{ Params: ParametrosId }>("/relatorios/:id", { schema: { params: esquemaId }, onRequest: podeGerarRelatorios }, async (request) => {
+        return publicoService.buscarRelatorio(request.parceiro, request.params.id);
+    });
+
+    app.get<{ Params: ParametrosId; Querystring: ConsultaDownload }>("/relatorios/:id/download", { schema: esquemaDownload, onRequest: podeGerarRelatorios }, async (request, reply) => {
+        const arquivo = await publicoService.baixarRelatorio(request.parceiro, request.params.id, request.query.formato);
+
+        return reply
+            .type(arquivo.tipoConteudo)
+            .header("Content-Disposition", `attachment; filename="${arquivo.nomeArquivo}"`)
+            .send(arquivo.conteudo);
+    });
+
+    app.get("/webhook", { onRequest: podeAtualizarCadastro }, async (request) => {
+        return publicoService.consultarWebhook(request.parceiro);
+    });
+
+    app.put<{ Body: CorpoWebhook }>("/webhook", { schema: esquemaWebhook, onRequest: podeAtualizarCadastro }, async (request) => {
+        return publicoService.configurarWebhook(request.parceiro, request.body.url);
+    });
+
+    app.delete("/webhook", { onRequest: podeAtualizarCadastro }, async (request) => {
+        return publicoService.removerWebhook(request.parceiro);
+    });
+
     app.get("/conta", { onRequest: exigirChave(null) }, async (request) => {
         return publicoService.conta(request.parceiro);
     });

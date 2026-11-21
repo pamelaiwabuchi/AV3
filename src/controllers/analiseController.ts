@@ -18,6 +18,10 @@ interface CorpoGerar {
     organizacaoId?: string;
 }
 
+interface ConsultaDownload {
+    formato: "json" | "csv";
+}
+
 interface ConsultaLista {
     pagina: number;
     tipo?: TipoRelatorio;
@@ -76,7 +80,30 @@ const esquemaListar = {
     },
 };
 
+const esquemaDownload = {
+    params: esquemaId,
+    querystring: {
+        type: "object",
+        properties: { formato: { type: "string", enum: ["json", "csv"], default: "json" } },
+    },
+};
+
 export async function analiseController(app: FastifyInstance) {
+    app.get<{ Params: ParametrosId; Querystring: ConsultaDownload }>("/relatorios/analiticos/:id/download", { schema: esquemaDownload, onRequest: exigirLogin }, async (request, reply) => {
+        const relatorio = await relatorioAnaliticoService.buscar(request.params.id);
+
+        if (!tiposPermitidos(request.user.papel).includes(relatorio.tipo)) {
+            throw new ErroNaoEncontrado("Relatório não encontrado");
+        }
+
+        const arquivo = relatorioAnaliticoService.exportar(relatorio, request.query.formato);
+
+        return reply
+            .type(arquivo.tipoConteudo)
+            .header("Content-Disposition", `attachment; filename="${arquivo.nomeArquivo}"`)
+            .send(arquivo.conteudo);
+    });
+
     app.post<{ Body: CorpoGerar }>("/relatorios/analiticos", { schema: esquemaGerar, onRequest: exigirLogin }, async (request, reply) => {
         const { tipo, inicio, fim, organizacaoId } = request.body;
         exigirTipoPermitido(request, tipo);

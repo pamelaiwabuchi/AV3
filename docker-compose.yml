@@ -13,6 +13,21 @@ services:
       timeout: 5s
       retries: 10
 
+  # Fila de tarefas (BullMQ): relatórios pedidos pela API, agendamentos e webhooks.
+  # A porta fica só no próprio computador (127.0.0.1), para o npm run dev usar.
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - dados-fila:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   api:
     build: .
     environment:
@@ -24,11 +39,15 @@ services:
       EMPRESA_RAZAO_SOCIAL: ${EMPRESA_RAZAO_SOCIAL:-GreenCode Logística Reversa Ltda}
       EMPRESA_CNPJ: ${EMPRESA_CNPJ:-47.638.125/0001-05}
       LIMITE_API_POR_MINUTO: ${LIMITE_API_POR_MINUTO:-100}
+      REDIS_URL: redis://redis:6379
     ports:
       - "3333:3333"
     depends_on:
       banco:
         condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   dados-banco:
+  dados-fila:

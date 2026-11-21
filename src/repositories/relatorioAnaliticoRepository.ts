@@ -93,10 +93,19 @@ export async function concluir(id: string, resultado: Prisma.InputJsonValue, pre
 }
 
 // definitivo = false: volta para PENDENTE (vai ser tentado de novo); true: FALHOU.
+// updateMany: se o relatório não existir, não dá erro (não há o que marcar).
 export async function registrarFalha(id: string, erro: string, definitivo: boolean) {
-    await prisma.relatorioGerado.update({
+    await prisma.relatorioGerado.updateMany({
         where: { id },
         data: { status: definitivo ? "FALHOU" : "PENDENTE", erro },
+    });
+}
+
+// erro = null: aviso entregue; com texto: erro da última tentativa de avisar.
+export async function registrarEntregaDoWebhook(id: string, erro: string | null) {
+    await prisma.relatorioGerado.updateMany({
+        where: { id },
+        data: erro ? { webhookErro: erro } : { webhookEntregueEm: new Date(), webhookErro: null },
     });
 }
 

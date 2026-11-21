@@ -22,7 +22,7 @@ import { chaveApiController } from "./controllers/chaveApiController.js";
 import { publicoController } from "./controllers/publicoController.js";
 import { falhaController } from "./controllers/falhaController.js";
 import { analiseController } from "./controllers/analiseController.js";
-import { PREFIXO_INTERNO, PREFIXO_PUBLICO } from "./utils/prefixos.js";
+import { PREFIXO_INTERNO, PREFIXO_PUBLICO, VERSAO_API } from "./utils/prefixos.js";
 
 function tratarErro(erro: FastifyError, request: FastifyRequest, reply: FastifyReply) {
     if (erro instanceof ErroApp) {
@@ -65,8 +65,16 @@ export function criarApp() {
     return app;
 }
 
+// Toda resposta da API diz a versão exata (ex.: 1.0.0) no cabeçalho api-version.
+function informarVersao(app: FastifyInstance) {
+    app.addHook("onSend", async (request, reply) => {
+        reply.header("api-version", VERSAO_API);
+    });
+}
+
 // Rotas dos funcionários. Todas ficam debaixo de /api/v1/internal.
 async function rotasInternas(app: FastifyInstance) {
+    informarVersao(app);
     app.register(authController);
     app.register(usuarioController);
     app.register(departamentoController);
@@ -90,6 +98,7 @@ async function rotasInternas(app: FastifyInstance) {
 // hook "preHandler": o limite é contado depois da conferência da chave (onRequest),
 // quando já se sabe de quem é a chave e qual é o limite dela. Quem passa do limite recebe 429.
 async function rotasPublicas(app: FastifyInstance) {
+    informarVersao(app);
     const limitePadrao = Number(process.env.LIMITE_API_POR_MINUTO ?? 100);
 
     await app.register(fastifyRateLimit, {

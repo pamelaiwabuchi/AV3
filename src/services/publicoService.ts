@@ -18,6 +18,9 @@ import * as equipamentoService from "./equipamentoService.js";
 import * as loteService from "./loteService.js";
 import * as organizacaoService from "./organizacaoService.js";
 import * as relatorioService from "./relatorioService.js";
+import * as relatorioAnaliticoService from "./relatorioAnaliticoService.js";
+import * as webhookService from "./webhookService.js";
+import type { ItemDoInventario } from "./analise/vidaUtilService.js";
 import type { DadosEdicaoLote } from "../repositories/loteRepository.js";
 import type { DadosEquipamento, DadosEquipamentoNovo } from "../repositories/equipamentoRepository.js";
 
@@ -232,4 +235,68 @@ export async function resumo(parceiro: Parceiro, inicio: Date, fim: Date) {
     const destinacao = await relatorioService.relatorioDestinacao(parceiro.organizacaoId, inicio, fim);
 
     return { lotesPorStatus, destinacao };
+}
+
+// ---------- relatórios pela API (processados na fila) ----------
+
+export interface PedidoDoParceiro {
+    tipo: "EFICIENCIA" | "VIDA_UTIL_INVENTARIO";
+    inicio?: Date;
+    fim?: Date;
+    itens?: ItemDoInventario[];
+}
+
+function enderecos(relatorioId: string) {
+    const base = `/api/v1/public/relatorios/${relatorioId}`;
+    return { status: base, downloadJson: `${base}/download?formato=json`, downloadCsv: `${base}/download?formato=csv` };
+}
+
+// O parceiro vê só os relatórios que ele mesmo pediu pela API.
+async function relatorioDoParceiro(parceiro: Parceiro, relatorioId: string) {
+    const relatorio = await relatorioAnaliticoService.buscar(relatorioId);
+
+    if (relatorio.organizacaoId !== parceiro.organizacaoId || relatorio.origem !== "API") {
+        throw new ErroNaoEncontrado("Relatório não encontrado");
+    }
+
+    return relatorio;
+}
+
+function resumoDoPedido(relatorio: { id: string; tipo: string; status: string; dataPedido: Date; dataConclusao: Date | null; tentativas: number; erro: string | null }) {
+    const { id, tipo, status, dataPedido, dataConclusao, tentativas, erro } = relatorio;
+    return { id, tipo, status, dataPedido, dataConclusao, tentativas, erro, links: enderecos(id) };
+}
+
+export async function pedirRelatorio(parceiro: Parceiro, pedido: PedidoDoParceiro) {
+    const relatorio = await relatorioAnaliticoService.pedirNaFila({ ...pedido, origem: "API", organizacaoId: parceiro.organizacaoId });
+    return resumoDoPedido(relatorio);
+}
+
+export async function listarRelatorios(parceiro: Parceiro, pagina: number) {
+    const lista = await relatorioAnaliticoService.listar(pagina, { organizacaoId: parceiro.organizacaoId, origem: "API" });
+    return { ...lista, itens: lista.itens.map(resumoDoPedido) };
+}
+
+// Status do pedido; quando estiver CONCLUIDO, traz também o resultado.
+export async function buscarRelatorio(parceiro: Parceiro, relatorioId: string) {
+    const relatorio = await relatorioDoParceiro(parceiro, relatorioId);
+    return { ...resumoDoPedido(relatorio), resultado: relatorio.resultado };
+}
+
+export async function baixarRelatorio(parceiro: Parceiro, relatorioId: string, formato: "json" | "csv") {
+    return relatorioAnaliticoService.exportar(await relatorioDoParceiro(parceiro, relatorioId), formato);
+}
+
+// ---------- webhook ----------
+
+export async function consultarWebhook(parceiro: Parceiro) {
+    return webhookService.consultar(parceiro.organizacaoId);
+}
+
+export async function configurarWebhook(parceiro: Parceiro, url: string) {
+    return webhookService.configurar(parceiro.organizacaoId, url, await idDaContaDeServico());
+}
+
+export async function removerWebhook(parceiro: Parceiro) {
+    return webhookService.remover(parceiro.organizacaoId, await idDaContaDeServico());
 }

@@ -99,7 +99,16 @@ export const resumos: Record<string, string> = {
 
     "POST /relatorios/analiticos": "Gera e guarda um relatório: EFICIENCIA (GESTOR, AUDITOR), RENTABILIDADE (AUDITOR) ou VIDA_UTIL (GESTOR, OPERADOR_CADASTRO, AUDITOR); período padrão: últimos 12 meses",
     "GET /relatorios/analiticos": "Histórico dos relatórios gerados (sem o resultado), só dos tipos que o seu papel pode ver; filtros de tipo e status",
+    "GET /relatorios/analiticos/:id/download": "Baixa um relatório guardado em JSON (completo) ou CSV (tabela principal; abre no Excel)",
     "GET /relatorios/analiticos/:id": "Mostra um relatório guardado, com o resultado completo e, na vida útil, as previsões por tipo de equipamento",
+
+    "POST /public/relatorios": "Pede um relatório (GERAR_RELATORIOS): EFICIENCIA dos lotes da organização ou VIDA_UTIL_INVENTARIO (previsão para até 5000 equipamentos que a organização ainda usa). Responde 202 na hora com o id; o cálculo vai para a fila",
+    "GET /public/relatorios": "Lista os relatórios que a organização pediu, com o status de cada um (GERAR_RELATORIOS)",
+    "GET /public/relatorios/:id": "Status do pedido (PENDENTE, PROCESSANDO, CONCLUIDO ou FALHOU); quando CONCLUIDO, traz o resultado (GERAR_RELATORIOS)",
+    "GET /public/relatorios/:id/download": "Baixa o relatório pronto em JSON ou CSV; antes de ficar pronto responde 409 (GERAR_RELATORIOS)",
+    "GET /public/webhook": "Mostra o endereço de webhook cadastrado (ATUALIZAR_CADASTRO)",
+    "PUT /public/webhook": "Cadastra ou troca o endereço https que recebe o aviso quando um relatório termina; gera um segredo novo, mostrado só nesta resposta, para conferir a assinatura x-greencode-assinatura (ATUALIZAR_CADASTRO)",
+    "DELETE /public/webhook": "Remove o webhook; os relatórios continuam disponíveis por consulta (ATUALIZAR_CADASTRO)",
 
     "GET /public/conta": "Dados da própria organização, se tem contrato vigente e as permissões da chave (qualquer chave válida)",
     "PATCH /public/conta": "Altera telefone, e-mail ou endereço da própria organização (ATUALIZAR_CADASTRO)",
@@ -194,6 +203,15 @@ export const exemplos: Record<string, object> = {
     "POST /organizacoes/:id/chaves-api": { permissoes: ["LER_RASTREABILIDADE", "GERENCIAR_LOTES", "GERAR_RELATORIOS", "ATUALIZAR_CADASTRO"], limitePorMinuto: 100, revogarAnteriorNaHora: false },
 
     "POST /relatorios/analiticos": { tipo: "VIDA_UTIL" },
+    "POST /public/relatorios": {
+        tipo: "VIDA_UTIL_INVENTARIO",
+        itens: [
+            { identificador: "PAT-0001", tipo: "NOTEBOOK", marca: "Dell", modelo: "Latitude 5490", anoFabricacao: 2019 },
+            { identificador: "PAT-0002", tipo: "MONITOR", marca: "LG", modelo: "24MK430", anoFabricacao: 2021 },
+            { identificador: "PAT-0003", tipo: "SERVIDOR", marca: "Dell", modelo: "PowerEdge R640", anoFabricacao: 2017 },
+        ],
+    },
+    "PUT /public/webhook": { url: "https://techcorp.com.br/avisos/greencode" },
     "PATCH /public/conta": { telefone: "(12) 3900-5555", versao: 1 },
     "POST /public/lotes": {
         dataPrevistaChegada: hoje,

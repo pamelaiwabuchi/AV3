@@ -5,6 +5,7 @@ import { criarApp } from "../src/app.js";
 import { prisma } from "../src/lib/prisma.js";
 import { PREFIXO_INTERNO, PREFIXO_PUBLICO } from "../src/utils/prefixos.js";
 import { CHAVE_API_EXEMPLO } from "../src/utils/esquemas.js";
+import { fecharFilas, removerTarefaDeRelatorio } from "../src/lib/fila.js";
 
 // Estes testes usam os dados do seed (npx prisma db seed) e só fazem consultas,
 // para não deixar registros no banco (Auditoria e Movimentacao não podem ser apagadas).
@@ -37,6 +38,7 @@ before(async () => {
 
 after(async () => {
     await app.close();
+    await fecharFilas();
     await prisma.$disconnect();
 });
 
@@ -269,6 +271,47 @@ test("relatório de vida útil: gestor gera e fica guardado com as previsões; g
     // Relatórios podem ser apagados (não são histórico protegido): limpa o que o teste criou.
     await prisma.previsaoVidaUtil.deleteMany({ where: { relatorioId: relatorio.id } });
     await prisma.relatorioGerado.delete({ where: { id: relatorio.id } });
+});
+
+test("API pública: pedido de relatório responde 202 na hora e fica na fila (precisa do Redis)", async () => {
+    const itens = [{ identificador: "PAT-1", tipo: "NOTEBOOK", anoFabricacao: 2019 }];
+    const resposta = await app.inject({
+        method: "POST",
+        url: PREFIXO_PUBLICO + "/relatorios",
+        headers: { "x-api-key": CHAVE_API_EXEMPLO },
+        payload: { tipo: "VIDA_UTIL_INVENTARIO", itens },
+    });
+
+    assert.equal(resposta.statusCode, 202);
+    const pedido = resposta.json();
+    assert.equal(pedido.status, "PENDENTE");
+    assert.equal(resposta.headers.location, pedido.links.status);
+
+    // Sem worker rodando no teste: o status continua PENDENTE e o download ainda não existe.
+    assert.equal((await pedirComChave(`/relatorios/${pedido.id}`)).json().status, "PENDENTE");
+    assert.equal((await pedirComChave(`/relatorios/${pedido.id}/download`)).statusCode, 409);
+
+    // Limpa: tira a tarefa da fila e apaga o pedido.
+    await removerTarefaDeRelatorio(pedido.id);
+    await prisma.relatorioGerado.delete({ where: { id: pedido.id } });
+});
+
+test("API pública: rentabilidade não pode ser pedida (segredo comercial) e webhook só aceita https", async () => {
+    const rentabilidade = await app.inject({
+        method: "POST",
+        url: PREFIXO_PUBLICO + "/relatorios",
+        headers: { "x-api-key": CHAVE_API_EXEMPLO },
+        payload: { tipo: "RENTABILIDADE" },
+    });
+    assert.equal(rentabilidade.statusCode, 400);
+
+    const webhookInseguro = await app.inject({
+        method: "PUT",
+        url: PREFIXO_PUBLICO + "/webhook",
+        headers: { "x-api-key": CHAVE_API_EXEMPLO },
+        payload: { url: "http://techcorp.com.br/avisos" },
+    });
+    assert.equal(webhookInseguro.statusCode, 422);
 });
 
 // Fica por último: gasta o limite de requisições da chave de exemplo.

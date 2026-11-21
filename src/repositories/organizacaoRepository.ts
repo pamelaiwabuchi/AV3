@@ -5,6 +5,10 @@ import { montarPagina } from "../utils/paginacao.js";
 
 const TAMANHO_PAGINA = 20;
 
+// O segredo do webhook nunca sai nas consultas comuns (nem para a tela da organização,
+// nem para a API pública). Só buscarWebhook traz ele, para assinar os avisos.
+const SEM_SEGREDO = { webhookSegredo: true } as const;
+
 export interface AlteracoesOrganizacao extends Partial<DadosOrganizacao> {
     ativo?: boolean;
 }
@@ -41,6 +45,7 @@ export async function listarOrganizacoes(pagina: number, busca: string) {
     const [itens, total] = await Promise.all([
         prisma.organizacao.findMany({
             where,
+            omit: SEM_SEGREDO,
             orderBy: { razaoSocial: "asc" },
             skip: (pagina - 1) * TAMANHO_PAGINA,
             take: TAMANHO_PAGINA,
@@ -60,7 +65,7 @@ export async function listarResumoParaGestor() {
 }
 
 export async function buscarOrganizacaoPorId(id: string) {
-    return prisma.organizacao.findUnique({ where: { id } });
+    return prisma.organizacao.findUnique({ where: { id }, omit: SEM_SEGREDO });
 }
 
 // Trava a linha da organização até o fim da transação (igual ao travarLote).
@@ -70,7 +75,7 @@ export async function travarOrganizacao(tx: Transacao, id: string) {
 }
 
 export async function buscarOrganizacaoPorCnpj(cnpj: string) {
-    return prisma.organizacao.findUnique({ where: { cnpj } });
+    return prisma.organizacao.findUnique({ where: { cnpj }, omit: SEM_SEGREDO });
 }
 
 export async function temContratoVigente(id: string) {
@@ -82,7 +87,7 @@ export async function temContratoVigente(id: string) {
 }
 
 export async function criarOrganizacao(tx: Transacao, dados: DadosOrganizacao) {
-    return tx.organizacao.create({ data: dados });
+    return tx.organizacao.create({ data: dados, omit: SEM_SEGREDO });
 }
 
 export async function atualizarOrganizacao(tx: Transacao, id: string, versao: number, alteracoes: AlteracoesOrganizacao) {
@@ -92,4 +97,16 @@ export async function atualizarOrganizacao(tx: Transacao, id: string, versao: nu
     });
 
     return resultado.count === 1;
+}
+
+export async function buscarWebhook(id: string) {
+    return prisma.organizacao.findUnique({
+        where: { id },
+        select: { id: true, razaoSocial: true, webhookUrl: true, webhookSegredo: true },
+    });
+}
+
+// Campos controlados pelo parceiro pela API: não aumentam a versão da organização.
+export async function salvarWebhook(tx: Transacao, id: string, webhookUrl: string | null, webhookSegredo: string | null) {
+    await tx.organizacao.update({ where: { id }, data: { webhookUrl, webhookSegredo } });
 }
