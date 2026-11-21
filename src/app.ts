@@ -1,5 +1,6 @@
 import Fastify from "fastify";
-import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
+import fastifyRateLimit from "@fastify/rate-limit";
+import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { Prisma } from "./generated/prisma/client.js";
 import { ErroApp } from "./errors/erros.js";
 import { mensagemEmPortugues } from "./errors/traducaoErros.js";
@@ -17,6 +18,11 @@ import { movimentacaoController } from "./controllers/movimentacaoController.js"
 import { auditoriaController } from "./controllers/auditoriaController.js";
 import { relatorioController } from "./controllers/relatorioController.js";
 import { certificadoController } from "./controllers/certificadoController.js";
+import { chaveApiController } from "./controllers/chaveApiController.js";
+import { publicoController } from "./controllers/publicoController.js";
+import { falhaController } from "./controllers/falhaController.js";
+import { analiseController } from "./controllers/analiseController.js";
+import { PREFIXO_INTERNO, PREFIXO_PUBLICO } from "./utils/prefixos.js";
 
 function tratarErro(erro: FastifyError, request: FastifyRequest, reply: FastifyReply) {
     if (erro instanceof ErroApp) {
@@ -53,6 +59,14 @@ export function criarApp() {
     });
 
 
+    app.register(rotasInternas, { prefix: PREFIXO_INTERNO });
+    app.register(rotasPublicas, { prefix: PREFIXO_PUBLICO });
+
+    return app;
+}
+
+// Rotas dos funcionários. Todas ficam debaixo de /api/v1/internal.
+async function rotasInternas(app: FastifyInstance) {
     app.register(authController);
     app.register(usuarioController);
     app.register(departamentoController);
@@ -61,10 +75,34 @@ export function criarApp() {
     app.register(destinoController);
     app.register(loteController);
     app.register(equipamentoController);
+    app.register(falhaController);
     app.register(movimentacaoController);
     app.register(auditoriaController);
     app.register(relatorioController);
+    app.register(analiseController);
     app.register(certificadoController);
+    app.register(chaveApiController);
+}
 
-    return app;
+// Rotas dos parceiros (chave de API). Só elas têm limite de requisições por minuto.
+// O limite vem da chave (o operador define ao gerar, conforme o contrato) e é contado
+// por organização: durante a troca de chave, a antiga e a nova somam no mesmo limite.
+// hook "preHandler": o limite é contado depois da conferência da chave (onRequest),
+// quando já se sabe de quem é a chave e qual é o limite dela. Quem passa do limite recebe 429.
+async function rotasPublicas(app: FastifyInstance) {
+    const limitePadrao = Number(process.env.LIMITE_API_POR_MINUTO ?? 100);
+
+    await app.register(fastifyRateLimit, {
+        hook: "preHandler",
+        timeWindow: "1 minute",
+        // Sem parceiro só acontece em rota inexistente (404): aí vale o limite padrão, por IP.
+        max: (request) => request.parceiro?.limitePorMinuto ?? limitePadrao,
+        keyGenerator: (request) => request.parceiro?.organizacaoId ?? request.ip,
+        errorResponseBuilder: (request, contexto) => {
+            const segundos = Math.ceil(contexto.ttl / 1000);
+            return new ErroApp(`Limite de ${contexto.max} requisições por minuto atingido. Tente de novo em ${segundos} segundos`, 429);
+        },
+    });
+
+    app.register(publicoController);
 }

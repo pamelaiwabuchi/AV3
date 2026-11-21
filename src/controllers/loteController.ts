@@ -7,7 +7,7 @@ import { camposEquipamentoNovo, obrigatoriosEquipamentoNovo } from "./equipament
 import type { DadosEquipamentoNovo } from "../repositories/equipamentoRepository.js";
 import type { DadosEdicaoLote, FiltrosLote } from "../repositories/loteRepository.js";
 import { exigirAlgumCampo } from "../utils/alteracoes.js";
-import { filtroDeAno } from "../utils/datas.js";
+import { filtroDeAno, hojeSemHora } from "../utils/datas.js";
 import { contemTexto, filtroDeEmpresa } from "../utils/filtros.js";
 
 interface ParametrosId {
@@ -40,6 +40,11 @@ interface CorpoEditar extends Partial<DadosEdicaoLote> {
 
 interface CorpoVersao {
     versao: number;
+}
+
+interface CorpoConfirmar {
+    versao: number;
+    dataEntrada?: string;
 }
 
 const esquemaEquipamentoNovo = {
@@ -105,6 +110,20 @@ const esquemaCancelar = {
     },
 };
 
+const esquemaConfirmar = {
+    params: esquemaId,
+    body: {
+        type: "object",
+        required: ["versao"],
+        additionalProperties: false,
+        properties: {
+            versao: { type: "integer" },
+            // Dia em que o lote chegou. Sem informar, vale hoje.
+            dataEntrada: { type: "string", format: "date" },
+        },
+    },
+};
+
 const esquemaAdicionar = {
     params: esquemaId,
     body: esquemaEquipamentoNovo,
@@ -152,6 +171,7 @@ export async function loteController(app: FastifyInstance) {
     const opcoesEditar = { schema: esquemaEditar, onRequest: podeAlterar };
     const opcoesCancelar = { schema: esquemaCancelar, onRequest: podeAlterar };
     const opcoesAdicionar = { schema: esquemaAdicionar, onRequest: podeAlterar };
+    const opcoesConfirmar = { schema: esquemaConfirmar, onRequest: podeAlterar };
 
     app.get<{ Querystring: ConsultaLista }>("/lotes", opcoesListar, async (request) => {
         return loteService.listar(request.query.pagina, montarFiltros(request.query));
@@ -181,6 +201,13 @@ export async function loteController(app: FastifyInstance) {
 
     app.patch<{ Params: ParametrosId; Body: CorpoVersao }>("/lotes/:id/cancelar", opcoesCancelar, async (request) => {
         return loteService.cancelar(request.params.id, request.body.versao, request.user.id);
+    });
+
+    app.patch<{ Params: ParametrosId; Body: CorpoConfirmar }>("/lotes/:id/confirmar-recebimento", opcoesConfirmar, async (request) => {
+        const { versao, dataEntrada } = request.body;
+        const dia = dataEntrada ? new Date(dataEntrada) : hojeSemHora();
+
+        return loteService.confirmarRecebimento(request.params.id, versao, dia, request.user.id);
     });
 
     app.post<{ Params: ParametrosId; Body: DadosEquipamentoNovo }>("/lotes/:id/equipamentos", opcoesAdicionar, async (request, reply) => {

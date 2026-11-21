@@ -29,7 +29,7 @@ function converterLote(lote: LoteDoBanco): LoteDoCertificado {
     return {
         notaFiscal: lote.notaFiscal,
         transportadora: lote.transportadora,
-        dataEntrada: lote.dataEntrada,
+        dataEntrada: lote.dataEntrada!, // lote FINALIZADO sempre tem data de entrada
         dataFinalizacao: lote.dataStatus,
     };
 }
@@ -52,7 +52,8 @@ function diaSemTraco(data: Date) {
     return data.toISOString().slice(0, 10).replaceAll("-", "");
 }
 
-export async function certificadoDoLote(loteId: string, idUsuario: string) {
+// emitidoPor: texto que sai no PDF. Sem ele, é o nome do usuário logado.
+export async function certificadoDoLote(loteId: string, idUsuario: string, emitidoPor?: string) {
     const lote = await certificadoRepository.buscarLoteParaCertificado(loteId);
 
     if (!lote) {
@@ -68,7 +69,7 @@ export async function certificadoDoLote(loteId: string, idUsuario: string) {
         numero,
         referencia: `lote ${lote.id}`,
         emitidoEm: new Date(),
-        emitidoPor: await nomeDoUsuario(idUsuario),
+        emitidoPor: emitidoPor ?? await nomeDoUsuario(idUsuario),
         empresa: dadosDaEmpresa(),
         cliente: lote.organizacao,
         periodo: null,
@@ -79,7 +80,7 @@ export async function certificadoDoLote(loteId: string, idUsuario: string) {
     return { numero, pdf };
 }
 
-export async function certificadoDoPeriodo(organizacaoId: string, inicio: Date, fim: Date, idUsuario: string) {
+export async function certificadoDoPeriodo(organizacaoId: string, inicio: Date, fim: Date, idUsuario: string, emitidoPor?: string) {
     if (fim < inicio) {
         throw new ErroRegraNegocio("A data final precisa ser igual ou depois da data inicial");
     }
@@ -101,7 +102,7 @@ export async function certificadoDoPeriodo(organizacaoId: string, inicio: Date, 
         numero,
         referencia: `organização ${organizacao.id}`,
         emitidoEm: new Date(),
-        emitidoPor: await nomeDoUsuario(idUsuario),
+        emitidoPor: emitidoPor ?? await nomeDoUsuario(idUsuario),
         empresa: dadosDaEmpresa(),
         cliente: { razaoSocial: organizacao.razaoSocial, cnpj: organizacao.cnpj, enderecoCompleto: organizacao.enderecoCompleto },
         periodo: { inicio, fim },

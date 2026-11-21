@@ -83,10 +83,10 @@ export async function atualizarAvaliacao(tx: Transacao, id: string, versao: numb
     return resultado.count === 1;
 }
 
-export async function atualizarStatusEquipamento(tx: Transacao, id: string, versao: number, status: StatusRastreamento, destinoId: string | null) {
+export async function atualizarStatusEquipamento(tx: Transacao, id: string, versao: number, status: StatusRastreamento, destinoId: string | null, valorRecuperacao: number | null) {
     const resultado = await tx.equipamento.updateMany({
         where: { id, versao },
-        data: { statusRastreamento: status, destinoId, versao: { increment: 1 } },
+        data: { statusRastreamento: status, destinoId, valorRecuperacao, versao: { increment: 1 } },
     });
 
     return resultado.count === 1;

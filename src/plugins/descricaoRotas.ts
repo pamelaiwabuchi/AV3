@@ -16,7 +16,10 @@ export const grupos = [
     { name: "Equipamentos", description: "Triagem, avaliação e movimentação de cada equipamento" },
     { name: "Movimentações", description: "Todas as mudanças de status, com filtros" },
     { name: "Painel e relatórios", description: "Resumo por papel e relatórios" },
+    { name: "Relatórios analíticos", description: "Eficiência operacional, rentabilidade por tipo de equipamento e vida útil remanescente (previsão). Cada relatório gerado fica guardado para consulta histórica" },
     { name: "Certificados", description: "Certificado de destinação final em PDF (lote ou período)" },
+    { name: "Chaves de API", description: "Chaves que dão acesso à API pública para cada organização parceira" },
+    { name: "API pública (parceiros)", description: "Rotas em /api/v1/public para o sistema da organização parceira. Autenticação pela chave de API no cabeçalho x-api-key; limite de requisições por minuto por chave (429 ao passar). O parceiro só vê os dados da própria organização; o lote que ele envia fica AGUARDANDO_RECEBIMENTO e só pode ser alterado até a greencode confirmar a chegada" },
     { name: "Auditoria e parâmetros", description: "Histórico de alterações e configurações globais" },
     { name: "Sistema", description: "Situação do servidor" },
 ];
@@ -30,6 +33,7 @@ const grupoPorCaminho: Record<string, string> = {
     destinos: "Destinos",
     lotes: "Lotes",
     equipamentos: "Equipamentos",
+    falhas: "Equipamentos",
     movimentacoes: "Movimentações",
     painel: "Painel e relatórios",
     relatorios: "Painel e relatórios",
@@ -38,8 +42,20 @@ const grupoPorCaminho: Record<string, string> = {
 };
 
 export function grupoDaRota(url: string) {
+    if (url.startsWith("/public")) {
+        return "API pública (parceiros)";
+    }
+
     if (url.endsWith("/certificado")) {
         return "Certificados";
+    }
+
+    if (url.startsWith("/relatorios/analiticos")) {
+        return "Relatórios analíticos";
+    }
+
+    if (url.includes("chaves-api")) {
+        return "Chaves de API";
     }
 
     if (url.endsWith("/contratos")) {
@@ -76,6 +92,29 @@ export const resumos: Record<string, string> = {
 
     "GET /contratos": "Lista os contratos; filtros de situação, vencendoEmDias (ex.: 30), ano, organização por id, nome ou CNPJ (OPERADOR_CADASTRO, AUDITOR)",
     "GET /organizacoes/:id/contratos": "Lista os contratos de uma organização (OPERADOR_CADASTRO, AUDITOR)",
+
+    "GET /organizacoes/:id/chaves-api": "Lista as chaves de API da organização, sem a chave em si (OPERADOR_CADASTRO, AUDITOR)",
+    "POST /organizacoes/:id/chaves-api": "Gera a chave de API (aparece só nesta resposta) com permissões e limite por minuto do contrato; a anterior vale mais 24 h, ou para na hora com revogarAnteriorNaHora (OPERADOR_CADASTRO)",
+    "POST /chaves-api/:id/revogar": "Revoga uma chave de API; ela para de funcionar na hora (OPERADOR_CADASTRO)",
+
+    "POST /relatorios/analiticos": "Gera e guarda um relatório: EFICIENCIA (GESTOR, AUDITOR), RENTABILIDADE (AUDITOR) ou VIDA_UTIL (GESTOR, OPERADOR_CADASTRO, AUDITOR); período padrão: últimos 12 meses",
+    "GET /relatorios/analiticos": "Histórico dos relatórios gerados (sem o resultado), só dos tipos que o seu papel pode ver; filtros de tipo e status",
+    "GET /relatorios/analiticos/:id": "Mostra um relatório guardado, com o resultado completo e, na vida útil, as previsões por tipo de equipamento",
+
+    "GET /public/conta": "Dados da própria organização, se tem contrato vigente e as permissões da chave (qualquer chave válida)",
+    "PATCH /public/conta": "Altera telefone, e-mail ou endereço da própria organização (ATUALIZAR_CADASTRO)",
+    "GET /public/lotes": "Lista os lotes da organização, com filtro de status (LER_RASTREABILIDADE)",
+    "GET /public/lotes/:id": "Mostra um lote com os equipamentos e o status de cada um (LER_RASTREABILIDADE)",
+    "POST /public/lotes": "Avisa o envio de um lote com pelo menos 1 equipamento; ele fica AGUARDANDO_RECEBIMENTO até a greencode confirmar a chegada; precisa de contrato vigente; nota fiscal não pode repetir (GERENCIAR_LOTES)",
+    "PATCH /public/lotes/:id": "Altera nota fiscal, transportadora, observações ou data prevista; só enquanto AGUARDANDO_RECEBIMENTO (GERENCIAR_LOTES)",
+    "PATCH /public/lotes/:id/cancelar": "Cancela o lote e os equipamentos dele; só enquanto AGUARDANDO_RECEBIMENTO (GERENCIAR_LOTES)",
+    "POST /public/lotes/:id/equipamentos": "Adiciona um equipamento ao lote; só enquanto AGUARDANDO_RECEBIMENTO (GERENCIAR_LOTES)",
+    "GET /public/lotes/:id/certificado": "Baixa o certificado de destinação em PDF; só lote FINALIZADO (LER_RASTREABILIDADE)",
+    "GET /public/equipamentos/:codigo": "Rastreabilidade: situação, histórico e falhas encontradas (laudo) de um equipamento pelo código de barras (LER_RASTREABILIDADE)",
+    "PATCH /public/equipamentos/:codigo": "Altera tipo, marca, modelo, ano ou peso; só com o lote AGUARDANDO_RECEBIMENTO (GERENCIAR_LOTES)",
+    "PATCH /public/equipamentos/:codigo/cancelar": "Remove (cancela) um equipamento; só com o lote AGUARDANDO_RECEBIMENTO e se não for o último (GERENCIAR_LOTES)",
+    "GET /public/certificado": "Baixa o certificado em PDF com os lotes finalizados no período; padrão: do começo do ano até hoje (LER_RASTREABILIDADE)",
+    "GET /public/resumo": "Lotes por status e destinação dos equipamentos (kg) no período; padrão: do começo do ano até hoje (LER_RASTREABILIDADE)",
     "GET /contratos/:id": "Mostra um contrato com a situação FUTURO, VIGENTE ou ENCERRADO (OPERADOR_CADASTRO, AUDITOR)",
     "POST /contratos": "Cria um contrato (OPERADOR_CADASTRO)",
     "PATCH /contratos/:id": "Altera um contrato que ainda não começou (OPERADOR_CADASTRO)",
@@ -92,8 +131,9 @@ export const resumos: Record<string, string> = {
     "GET /lotes/parados": "Lotes sem andar há mais dias que o configurado (GESTOR, OPERADOR_CADASTRO, AUDITOR)",
     "GET /lotes/:id": "Mostra um lote com seus equipamentos e peso total (GESTOR, OPERADOR_CADASTRO, AUDITOR)",
     "POST /lotes": "Registra a chegada de um lote com seus equipamentos; o código de barras é gerado pelo sistema (GESTOR)",
-    "PATCH /lotes/:id": "Altera nota fiscal, transportadora e/ou observações de um lote RECEBIDO (GESTOR)",
-    "PATCH /lotes/:id/cancelar": "Cancela um lote RECEBIDO e todos os seus equipamentos (GESTOR)",
+    "PATCH /lotes/:id": "Altera nota fiscal, transportadora e/ou observações de um lote AGUARDANDO_RECEBIMENTO ou RECEBIDO (GESTOR)",
+    "PATCH /lotes/:id/cancelar": "Cancela um lote AGUARDANDO_RECEBIMENTO ou RECEBIDO e todos os seus equipamentos (GESTOR)",
+    "PATCH /lotes/:id/confirmar-recebimento": "Confirma a chegada de um lote avisado pela API: passa a RECEBIDO com a data de entrada (padrão: hoje) (GESTOR)",
     "POST /lotes/:id/equipamentos": "Adiciona um equipamento a um lote; o código de barras é gerado pelo sistema (GESTOR)",
 
     "GET /equipamentos": "Lista os equipamentos; filtros de status, tipo, código, marca, modelo, ano de fabricação, ano de entrada, estado físico, lote, organização e parceiro de destino por id, nome ou CNPJ (GESTOR, OPERADOR_CADASTRO, AUDITOR)",
@@ -102,10 +142,14 @@ export const resumos: Record<string, string> = {
     "GET /equipamentos/:id/historico": "Histórico de movimentações do equipamento (GESTOR, AUDITOR)",
     "PATCH /equipamentos/:id": "Altera tipo, marca, modelo, ano e/ou peso enquanto AGUARDANDO_TRIAGEM (GESTOR)",
     "PATCH /equipamentos/:id/avaliacao": "Avalia o estado físico; queda de 2 níveis ou mais exige justificativa (GESTOR)",
-    "POST /equipamentos/:id/movimentar": "Muda o status de um equipamento pelo id (GESTOR)",
+    "GET /falhas": "Lista as falhas registradas; filtros de tipo, gravidade, tipo de equipamento e período; anuladas só com incluirAnuladas (GESTOR, OPERADOR_CADASTRO, AUDITOR)",
+    "GET /equipamentos/:id/falhas": "Lista as falhas de um equipamento, inclusive as anuladas (GESTOR, OPERADOR_CADASTRO, AUDITOR)",
+    "POST /equipamentos/:id/falhas": "Registra uma falha encontrada na triagem ou no desmonte (EM_TRIAGEM, AGUARDANDO_DESMONTE ou EM_DESMONTE); tipo OUTRO exige descricao (GESTOR)",
+    "POST /falhas/:id/anular": "Anula uma falha registrada por engano, com justificativa; nada é apagado (GESTOR)",
+    "POST /equipamentos/:id/movimentar": "Muda o status de um equipamento pelo id; para PECAS_REAPROVEITADAS ou MATERIAL_RECICLAVEL informe destinoId e valorRecuperacao (quanto o parceiro pagou) (GESTOR)",
     "POST /equipamentos/:id/corrigir": "Desfaz uma movimentação errada e as seguintes; o equipamento volta ao status de antes dela (GESTOR)",
-    "POST /equipamentos/codigo/:codigo/movimentar": "Muda o status de um equipamento pelo código de barras (GESTOR)",
-    "POST /equipamentos/movimentar-varios": "Muda o status de vários equipamentos pelos códigos de barras; tudo ou nada (GESTOR)",
+    "POST /equipamentos/codigo/:codigo/movimentar": "Muda o status de um equipamento pelo código de barras; para PECAS_REAPROVEITADAS ou MATERIAL_RECICLAVEL informe destinoId e valorRecuperacao (GESTOR)",
+    "POST /equipamentos/movimentar-varios": "Muda o status de vários equipamentos pelos códigos de barras; tudo ou nada; o valorRecuperacao informado vale para cada equipamento (GESTOR)",
 
     "GET /movimentacoes": "Lista as movimentações; filtros de período ou ano, status de destino, código do equipamento e responsável (id ou login) (GESTOR, AUDITOR)",
 
@@ -147,6 +191,25 @@ export const exemplos: Record<string, object> = {
         email: "ti@bompreco.com.br",
     },
     "PATCH /organizacoes/:id": { telefone: "(12) 3900-2000", versao: 1 },
+    "POST /organizacoes/:id/chaves-api": { permissoes: ["LER_RASTREABILIDADE", "GERENCIAR_LOTES", "GERAR_RELATORIOS", "ATUALIZAR_CADASTRO"], limitePorMinuto: 100, revogarAnteriorNaHora: false },
+
+    "POST /relatorios/analiticos": { tipo: "VIDA_UTIL" },
+    "PATCH /public/conta": { telefone: "(12) 3900-5555", versao: 1 },
+    "POST /public/lotes": {
+        dataPrevistaChegada: hoje,
+        notaFiscal: "NF-API-0001",
+        transportadora: "TransLog",
+        observacoes: "Enviado pelo sistema da TechCorp",
+        equipamentos: [
+            { tipo: "NOTEBOOK", marca: "Dell", modelo: "Latitude 5490", anoFabricacao: 2019, estadoFisico: "USADO_LEVE", pesoQuilogramas: 2.1 },
+        ],
+    },
+    "PATCH /public/lotes/:id": { transportadora: "Rápido Sul", versao: 1 },
+    "PATCH /lotes/:id/confirmar-recebimento": { versao: 1, dataEntrada: hoje },
+    "PATCH /public/lotes/:id/cancelar": { versao: 1 },
+    "POST /public/lotes/:id/equipamentos": { tipo: "MONITOR", marca: "LG", modelo: "24MK430", anoFabricacao: 2020, estadoFisico: "BOM_ESTADO", pesoQuilogramas: 3.4 },
+    "PATCH /public/equipamentos/:codigo": { pesoQuilogramas: 2.4, versao: 1 },
+    "PATCH /public/equipamentos/:codigo/cancelar": { versao: 1 },
 
     "POST /contratos": {
         organizacaoId: ID_DE_EXEMPLO,
@@ -200,6 +263,8 @@ export const exemplos: Record<string, object> = {
     "PATCH /equipamentos/:id": { marca: "Dell Technologies", versao: 1 },
     "PATCH /equipamentos/:id/avaliacao": { estadoFisico: "DANIFICADO_GRAVE", justificativa: "Tela trincada", versao: 1 },
     "POST /equipamentos/:id/movimentar": { novoStatus: "EM_TRIAGEM", versao: 1 },
+    "POST /equipamentos/:id/falhas": { tipo: "BATERIA_VICIADA", gravidade: "MODERADA", descricao: "Bateria não segura carga por mais de 10 minutos" },
+    "POST /falhas/:id/anular": { justificativa: "Registrada no equipamento errado", versao: 1 },
     "POST /equipamentos/:id/corrigir": { movimentacaoId: ID_DE_EXEMPLO, justificativa: "Era para reciclagem, não descarte", versao: 3 },
     "POST /equipamentos/codigo/:codigo/movimentar": { novoStatus: "EM_TRIAGEM", versao: 1 },
     "POST /equipamentos/movimentar-varios": { codigos: [`GC-${anoAtual}-000007`, `GC-${anoAtual}-000008`], novoStatus: "EM_TRIAGEM" },

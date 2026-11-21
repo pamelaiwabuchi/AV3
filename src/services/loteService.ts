@@ -9,9 +9,13 @@ import * as parametrosRepository from "../repositories/parametrosRepository.js";
 import * as movimentacaoService from "./movimentacaoService.js";
 import { validarAnoFabricacao } from "./equipamentoService.js";
 import type { DadosEdicaoLote, DadosLote, FiltrosLote } from "../repositories/loteRepository.js";
+import type { StatusLote } from "../generated/prisma/enums.js";
 import type { DadosEquipamentoNovo } from "../repositories/equipamentoRepository.js";
 
 const DIAS_MAXIMOS_ENTRADA = 90;
+
+// Status em que o lote ainda pode ser editado ou cancelado (a triagem não começou).
+const STATUS_EDITAVEIS: StatusLote[] = ["AGUARDANDO_RECEBIMENTO", "RECEBIDO"];
 const UM_DIA = 24 * 60 * 60 * 1000;
 
 async function buscarOuFalhar(id: string) {
@@ -44,6 +48,14 @@ async function validarOrganizacao(organizacaoId: string) {
     }
 }
 
+async function garantirNotaFiscalLivre(organizacaoId: string, notaFiscal: string, ignorarId: string | null) {
+    const repetido = await loteRepository.buscarNotaFiscalRepetida(organizacaoId, notaFiscal, ignorarId);
+
+    if (repetido) {
+        throw new ErroConflito(`Esta organização já tem um lote com a nota fiscal ${notaFiscal}`);
+    }
+}
+
 function validarDataEntrada(dataEntrada: Date) {
     const hoje = hojeSemHora();
     const limite = new Date(hoje.getTime() - DIAS_MAXIMOS_ENTRADA * UM_DIA);
@@ -69,10 +81,10 @@ function montarCodigoDeBarras(numero: number) {
     return `GC-${ano}-${String(numero).padStart(6, "0")}`;
 }
 
-async function adicionarNoLote(tx: Transacao, loteId: string, posicao: number, dados: DadosEquipamentoNovo, idUsuario: string) {
+async function adicionarNoLote(tx: Transacao, loteId: string, posicao: number, dados: DadosEquipamentoNovo, idUsuario: string, observacaoEntrada?: string) {
     const codigo = montarCodigoDeBarras(await equipamentoRepository.proximoNumeroDeCodigo(tx));
     const equipamento = await equipamentoRepository.criarEquipamento(tx, loteId, posicao, codigo, dados);
-    await movimentacaoService.registrarEntrada(tx, equipamento.id, idUsuario);
+    await movimentacaoService.registrarEntrada(tx, equipamento.id, idUsuario, observacaoEntrada);
 }
 
 export async function listar(pagina: number, filtros: FiltrosLote) {
@@ -99,16 +111,16 @@ export async function buscar(id: string) {
     return { ...lote, pesoTotalKg: Math.round(pesoTotalKg * 1000) / 1000 };
 }
 
-export async function criar(dados: DadosLote, equipamentos: DadosEquipamentoNovo[], idUsuario: string) {
+async function criarComEquipamentos(dados: DadosLote, equipamentos: DadosEquipamentoNovo[], idUsuario: string, observacaoEntrada?: string) {
     await validarOrganizacao(dados.organizacaoId);
-    validarDataEntrada(dados.dataEntrada);
+    await garantirNotaFiscalLivre(dados.organizacaoId, dados.notaFiscal, null);
     validarEquipamentosNovos(equipamentos);
 
     const lote = await executarTransacao(idUsuario, async (tx) => {
         const novoLote = await loteRepository.criarLote(tx, dados);
 
         for (let i = 0; i < equipamentos.length; i++) {
-            await adicionarNoLote(tx, novoLote.id, i + 1, equipamentos[i]!, idUsuario);
+            await adicionarNoLote(tx, novoLote.id, i + 1, equipamentos[i]!, idUsuario, observacaoEntrada);
         }
 
         return novoLote;
@@ -117,11 +129,44 @@ export async function criar(dados: DadosLote, equipamentos: DadosEquipamentoNovo
     return buscar(lote.id);
 }
 
+// Lote registrado pelo gestor: os equipamentos já chegaram (RECEBIDO).
+export async function criar(dados: DadosLote & { dataEntrada: Date }, equipamentos: DadosEquipamentoNovo[], idUsuario: string) {
+    validarDataEntrada(dados.dataEntrada);
+    return criarComEquipamentos(dados, equipamentos, idUsuario);
+}
+
+// Lote avisado pelo parceiro (API pública): os equipamentos ainda não chegaram.
+// Fica AGUARDANDO_RECEBIMENTO, sem data de entrada, até o gestor confirmar.
+export async function criarAvisoDeEnvio(dados: Omit<DadosLote, "dataEntrada">, equipamentos: DadosEquipamentoNovo[], idUsuario: string, observacaoEntrada: string) {
+    const dadosDoLote = { ...dados, dataEntrada: null, statusProcessamento: "AGUARDANDO_RECEBIMENTO" as const };
+    return criarComEquipamentos(dadosDoLote, equipamentos, idUsuario, observacaoEntrada);
+}
+
+export async function confirmarRecebimento(id: string, versao: number, dataEntrada: Date, idUsuario: string) {
+    const lote = await buscarOuFalhar(id);
+
+    if (lote.statusProcessamento !== "AGUARDANDO_RECEBIMENTO") {
+        throw new ErroRegraNegocio(`Só é possível confirmar o recebimento de um lote AGUARDANDO_RECEBIMENTO (este está ${lote.statusProcessamento})`);
+    }
+
+    validarDataEntrada(dataEntrada);
+
+    await executarTransacao(idUsuario, async (tx) => {
+        garantirAtualizou(await loteRepository.confirmarRecebimento(tx, id, versao, dataEntrada));
+    });
+
+    return buscar(id);
+}
+
 export async function editar(id: string, versao: number, dados: Partial<DadosEdicaoLote>, idUsuario: string) {
     const lote = await buscarOuFalhar(id);
 
-    if (lote.statusProcessamento !== "RECEBIDO") {
-        throw new ErroRegraNegocio("Só é possível editar um lote RECEBIDO");
+    if (!STATUS_EDITAVEIS.includes(lote.statusProcessamento)) {
+        throw new ErroRegraNegocio("Só é possível editar um lote AGUARDANDO_RECEBIMENTO ou RECEBIDO");
+    }
+
+    if (dados.notaFiscal !== undefined) {
+        await garantirNotaFiscalLivre(lote.organizacaoId, dados.notaFiscal, id);
     }
 
     await executarTransacao(idUsuario, async (tx) => {
@@ -134,8 +179,8 @@ export async function editar(id: string, versao: number, dados: Partial<DadosEdi
 export async function cancelar(id: string, versao: number, idUsuario: string) {
     const lote = await buscarOuFalhar(id);
 
-    if (lote.statusProcessamento !== "RECEBIDO") {
-        throw new ErroRegraNegocio("Só é possível cancelar um lote RECEBIDO");
+    if (!STATUS_EDITAVEIS.includes(lote.statusProcessamento)) {
+        throw new ErroRegraNegocio("Só é possível cancelar um lote AGUARDANDO_RECEBIMENTO ou RECEBIDO");
     }
 
     await executarTransacao(idUsuario, async (tx) => {
@@ -147,6 +192,7 @@ export async function cancelar(id: string, versao: number, idUsuario: string) {
             await movimentacaoService.registrarMudancaDeStatus(tx, equipamento, equipamento.versao, {
                 novoStatus: "CANCELADO",
                 destinoId: equipamento.destinoId,
+                valorRecuperacao: null,
                 observacao: "Lote cancelado",
                 idUsuario,
             });
@@ -158,7 +204,7 @@ export async function cancelar(id: string, versao: number, idUsuario: string) {
     return buscar(id);
 }
 
-export async function adicionarEquipamento(loteId: string, dados: DadosEquipamentoNovo, idUsuario: string) {
+export async function adicionarEquipamento(loteId: string, dados: DadosEquipamentoNovo, idUsuario: string, observacaoEntrada?: string) {
     const lote = await buscarOuFalhar(loteId);
 
     if (lote.statusProcessamento === "CANCELADO" || lote.statusProcessamento === "FINALIZADO") {
@@ -169,7 +215,7 @@ export async function adicionarEquipamento(loteId: string, dados: DadosEquipamen
 
     await executarTransacao(idUsuario, async (tx) => {
         const posicao = (await equipamentoRepository.buscarMaiorPosicaoDoLote(tx, loteId)) + 1;
-        await adicionarNoLote(tx, loteId, posicao, dados, idUsuario);
+        await adicionarNoLote(tx, loteId, posicao, dados, idUsuario, observacaoEntrada);
         await movimentacaoService.recalcularStatusLote(tx, loteId);
     });
 

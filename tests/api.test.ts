@@ -3,6 +3,8 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { criarApp } from "../src/app.js";
 import { prisma } from "../src/lib/prisma.js";
+import { PREFIXO_INTERNO, PREFIXO_PUBLICO } from "../src/utils/prefixos.js";
+import { CHAVE_API_EXEMPLO } from "../src/utils/esquemas.js";
 
 // Estes testes usam os dados do seed (npx prisma db seed) e só fazem consultas,
 // para não deixar registros no banco (Auditoria e Movimentacao não podem ser apagadas).
@@ -17,7 +19,12 @@ function token(id: string, papel: "ADMINISTRADOR" | "GESTOR_ALMOXARIFADO" | "AUD
 }
 
 function pedir(url: string, tokenUsado: string) {
-    return app.inject({ url, headers: { authorization: `Bearer ${tokenUsado}` } });
+    return app.inject({ url: PREFIXO_INTERNO + url, headers: { authorization: `Bearer ${tokenUsado}` } });
+}
+
+// Rota pública com a chave de exemplo da TechCorp (criada pelo seed).
+function pedirComChave(url: string, chave = CHAVE_API_EXEMPLO) {
+    return app.inject({ url: PREFIXO_PUBLICO + url, headers: { "x-api-key": chave } });
 }
 
 before(async () => {
@@ -39,18 +46,18 @@ test("GET /health responde ok", async () => {
 });
 
 test("rota protegida sem token responde 401", async () => {
-    const resposta = await app.inject({ url: "/lotes" });
+    const resposta = await app.inject({ url: PREFIXO_INTERNO + "/lotes" });
     assert.equal(resposta.statusCode, 401);
 });
 
 test("login com usuário inexistente responde 401 com mensagem genérica", async () => {
-    const resposta = await app.inject({ method: "POST", url: "/auth/login", payload: { login: "ninguem", senha: "x" } });
+    const resposta = await app.inject({ method: "POST", url: PREFIXO_INTERNO + "/auth/login", payload: { login: "ninguem", senha: "x" } });
     assert.equal(resposta.statusCode, 401);
     assert.equal(resposta.json().erro, "Login ou senha inválidos");
 });
 
 test("login sem senha é barrado pela validação (400)", async () => {
-    const resposta = await app.inject({ method: "POST", url: "/auth/login", payload: { login: "admin" } });
+    const resposta = await app.inject({ method: "POST", url: PREFIXO_INTERNO + "/auth/login", payload: { login: "admin" } });
     assert.equal(resposta.statusCode, 400);
 });
 
@@ -59,7 +66,7 @@ test("gestor não lista usuários (403) e auditor não altera parâmetros (403)"
 
     const resposta = await app.inject({
         method: "PATCH",
-        url: "/parametros",
+        url: PREFIXO_INTERNO + "/parametros",
         headers: { authorization: `Bearer ${tokenAuditor}` },
         payload: {},
     });
@@ -198,4 +205,79 @@ test("auditoria registra quem fez e nunca guarda o hash da senha", async () => {
 
 test("banco recusa apagar a auditoria (trigger)", async () => {
     await assert.rejects(prisma.auditoria.deleteMany({}), /não pode ser alterada nem apagada/);
+});
+
+test("API pública sem chave ou com chave errada responde 401", async () => {
+    const semChave = await app.inject({ url: PREFIXO_PUBLICO + "/conta" });
+    assert.equal(semChave.statusCode, 401);
+
+    const chaveErrada = await pedirComChave("/conta", "gc_chave_que_nao_existe");
+    assert.equal(chaveErrada.statusCode, 401);
+});
+
+test("API pública: a chave de exemplo é da TechCorp e o token de funcionário não serve", async () => {
+    const conta = await pedirComChave("/conta");
+    assert.equal(conta.statusCode, 200);
+    assert.equal(conta.json().organizacao.razaoSocial, "TechCorp Soluções Ltda");
+    assert.equal(conta.body.includes("hashChave"), false);
+
+    const comToken = await app.inject({ url: PREFIXO_PUBLICO + "/conta", headers: { authorization: `Bearer ${tokenAdmin}` } });
+    assert.equal(comToken.statusCode, 401);
+});
+
+test("API pública: parceiro só vê os próprios lotes e equipamentos (os outros dão 404)", async () => {
+    const lotes = (await pedirComChave("/lotes")).json();
+    const organizacoes = new Set(lotes.itens.map((lote: { organizacao: { razaoSocial: string } }) => lote.organizacao.razaoSocial));
+    assert.deepEqual([...organizacoes], ["TechCorp Soluções Ltda"]);
+
+    const loteDaEscola = await prisma.lote.findFirstOrThrow({ where: { notaFiscal: "NF-2001" }, include: { equipamentos: true } });
+    assert.equal((await pedirComChave(`/lotes/${loteDaEscola.id}`)).statusCode, 404);
+
+    const codigoDaEscola = loteDaEscola.equipamentos[0]!.codigoBarrasInterno;
+    assert.equal((await pedirComChave(`/equipamentos/${codigoDaEscola}`)).statusCode, 404);
+});
+
+test("API pública: rastreabilidade mostra o histórico sem o funcionário responsável nem o valor de recuperação", async () => {
+    const lote = await prisma.lote.findFirstOrThrow({ where: { notaFiscal: "NF-1001" }, include: { equipamentos: true } });
+    const resposta = await pedirComChave(`/equipamentos/${lote.equipamentos[0]!.codigoBarrasInterno}`);
+
+    assert.equal(resposta.statusCode, 200);
+    assert.ok(resposta.json().historico.length > 0);
+    assert.equal(resposta.body.includes("responsavel"), false);
+    assert.equal(resposta.body.includes("valorRecuperacao"), false);
+
+    const detalheDoLote = await pedirComChave(`/lotes/${lote.id}`);
+    assert.equal(detalheDoLote.body.includes("valorRecuperacao"), false);
+});
+
+test("relatório de vida útil: gestor gera e fica guardado com as previsões; gestor não gera rentabilidade", async () => {
+    const pedir = (tipo: string) => app.inject({
+        method: "POST",
+        url: PREFIXO_INTERNO + "/relatorios/analiticos",
+        headers: { authorization: `Bearer ${tokenGestor}` },
+        payload: { tipo },
+    });
+
+    const resposta = await pedir("VIDA_UTIL");
+    assert.equal(resposta.statusCode, 201);
+
+    const relatorio = resposta.json();
+    assert.equal(relatorio.status, "CONCLUIDO");
+    assert.ok(relatorio.previsoes.length > 0);
+    assert.equal((await pedir("RENTABILIDADE")).statusCode, 403);
+
+    // Relatórios podem ser apagados (não são histórico protegido): limpa o que o teste criou.
+    await prisma.previsaoVidaUtil.deleteMany({ where: { relatorioId: relatorio.id } });
+    await prisma.relatorioGerado.delete({ where: { id: relatorio.id } });
+});
+
+// Fica por último: gasta o limite de requisições da chave de exemplo.
+test("API pública: passar do limite de requisições por minuto responde 429", async () => {
+    let status = 0;
+
+    for (let i = 0; i < 150 && status !== 429; i++) {
+        status = (await pedirComChave("/conta")).statusCode;
+    }
+
+    assert.equal(status, 429);
 });

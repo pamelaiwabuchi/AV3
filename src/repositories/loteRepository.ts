@@ -10,12 +10,14 @@ export interface DadosEdicaoLote {
     notaFiscal: string;
     transportadora: string;
     observacoes: string | null;
+    dataPrevistaChegada?: Date | null;
 }
 
 export interface DadosLote extends DadosEdicaoLote {
     id?: string; // só o seed informa, para o lote de exemplo ter sempre o mesmo id
     organizacaoId: string;
-    dataEntrada: Date;
+    dataEntrada: Date | null; // null: lote avisado pela API, ainda não chegou
+    statusProcessamento?: StatusLote;
 }
 
 export type FiltrosLote = Prisma.LoteWhereInput;
@@ -38,7 +40,7 @@ export async function listarLotes(pagina: number, filtros: FiltrosLote) {
 export async function listarLotesParados(dataLimite: Date) {
     return prisma.lote.findMany({
         where: {
-            statusProcessamento: { in: ["RECEBIDO", "EM_TRIAGEM"] },
+            statusProcessamento: { in: ["AGUARDANDO_RECEBIMENTO", "RECEBIDO", "EM_TRIAGEM"] },
             dataStatus: { lt: dataLimite },
         },
         include: { organizacao: { select: { razaoSocial: true } } },
@@ -53,6 +55,30 @@ export async function buscarLotePorId(id: string, db: Transacao = prisma) {
             organizacao: { select: { razaoSocial: true, cnpj: true } },
             equipamentos: { orderBy: { posicaoNoLote: "asc" } },
         },
+    });
+}
+
+// Outro lote (não cancelado) da mesma organização com essa nota fiscal.
+// Maiúsculas não importam: "nf-1001" e "NF-1001" contam como iguais.
+export async function buscarNotaFiscalRepetida(organizacaoId: string, notaFiscal: string, ignorarId: string | null) {
+    const filtros: FiltrosLote = {
+        organizacaoId,
+        notaFiscal: { equals: notaFiscal, mode: "insensitive" },
+        statusProcessamento: { not: "CANCELADO" },
+    };
+
+    if (ignorarId) {
+        filtros.id = { not: ignorarId };
+    }
+
+    return prisma.lote.findFirst({ where: filtros });
+}
+
+export async function contarLotesPorStatus(organizacaoId: string) {
+    return prisma.lote.groupBy({
+        by: ["statusProcessamento"],
+        where: { organizacaoId },
+        _count: { _all: true },
     });
 }
 
@@ -80,6 +106,16 @@ export async function atualizarStatusLote(tx: Transacao, id: string, status: Sta
         where: { id },
         data: { statusProcessamento: status, dataStatus: new Date(), versao: { increment: 1 } },
     });
+}
+
+// O gestor confirma que o lote avisado pela API chegou: passa a RECEBIDO com a data real.
+export async function confirmarRecebimento(tx: Transacao, id: string, versao: number, dataEntrada: Date) {
+    const resultado = await tx.lote.updateMany({
+        where: { id, versao, statusProcessamento: "AGUARDANDO_RECEBIMENTO" },
+        data: { statusProcessamento: "RECEBIDO", dataEntrada, dataStatus: new Date(), versao: { increment: 1 } },
+    });
+
+    return resultado.count === 1;
 }
 
 export async function cancelarLote(tx: Transacao, id: string, versao: number) {

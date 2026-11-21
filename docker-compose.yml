@@ -23,6 +23,7 @@ services:
       ADMIN_SENHA: ${ADMIN_SENHA:-Greencode1}
       EMPRESA_RAZAO_SOCIAL: ${EMPRESA_RAZAO_SOCIAL:-GreenCode Logística Reversa Ltda}
       EMPRESA_CNPJ: ${EMPRESA_CNPJ:-47.638.125/0001-05}
+      LIMITE_API_POR_MINUTO: ${LIMITE_API_POR_MINUTO:-100}
     ports:
       - "3333:3333"
     depends_on:

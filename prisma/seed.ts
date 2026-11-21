@@ -1,4 +1,5 @@
 import bcrypt from "bcrypt";
+import { randomBytes } from "node:crypto";
 import { prisma } from "../src/lib/prisma.js";
 import * as usuarioService from "../src/services/usuarioService.js";
 import * as organizacaoService from "../src/services/organizacaoService.js";
@@ -7,8 +8,13 @@ import * as destinoService from "../src/services/destinoService.js";
 import * as loteService from "../src/services/loteService.js";
 import * as equipamentoService from "../src/services/equipamentoService.js";
 import type { DadosEquipamentoNovo } from "../src/repositories/equipamentoRepository.js";
-import { ID_DEPARTAMENTO_EXEMPLO, ID_LOTE_EXEMPLO, ID_ORGANIZACAO_EXEMPLO } from "../src/utils/esquemas.js";
+import { CHAVE_API_EXEMPLO, ID_DEPARTAMENTO_EXEMPLO, ID_LOTE_EXEMPLO, ID_ORGANIZACAO_EXEMPLO, LOGIN_CONTA_SERVICO } from "../src/utils/esquemas.js";
+import { calcularHashChave } from "../src/utils/chaveApi.js";
+import { executarTransacao } from "../src/lib/transacao.js";
+import * as chaveApiRepository from "../src/repositories/chaveApiRepository.js";
+import { criarHistoricoDeExemplo } from "./seedHistorico.js";
 import type { StatusRastreamento } from "../src/generated/prisma/enums.js";
+import { PermissaoApi } from "../src/generated/prisma/enums.js";
 
 const CUSTO_BCRYPT = 10;
 
@@ -66,6 +72,95 @@ async function criarAdministrador() {
     console.log(`Administrador "${login}" criado.`);
 }
 
+// Conta de serviço: responsável por tudo que chega pela API pública.
+// Nasce desativada e com uma senha sorteada que ninguém conhece, então não faz login.
+async function criarContaDeServico() {
+    const existente = await prisma.usuario.findUnique({ where: { login: LOGIN_CONTA_SERVICO } });
+
+    if (existente) {
+        console.log(`Conta de serviço "${LOGIN_CONTA_SERVICO}" já existe, nada foi alterado.`);
+        return;
+    }
+
+    const senhaSorteada = randomBytes(32).toString("hex");
+
+    await prisma.usuario.create({
+        data: {
+            nome: "Integração API pública",
+            login: LOGIN_CONTA_SERVICO,
+            hashSenha: await bcrypt.hash(senhaSorteada, CUSTO_BCRYPT),
+            papel: "GESTOR_ALMOXARIFADO",
+            ativo: false,
+            precisaTrocarSenha: false,
+            departamentoId: await idDoDepartamento("TI"),
+        },
+    });
+
+    console.log(`Conta de serviço "${LOGIN_CONTA_SERVICO}" criada.`);
+}
+
+// Chave de API de exemplo da TechCorp (CHAVE_API_EXEMPLO), para testar a API pública.
+// Não cria se a TechCorp já tiver outra chave ativa (gerada por alguém no Swagger).
+// Busca pelo CNPJ porque bancos criados antes dos ids fixos têm outro id para ela.
+async function criarChaveDeExemplo() {
+    const techCorp = await prisma.organizacao.findUnique({ where: { cnpj: "52601815000120" } });
+
+    if (!techCorp) {
+        return;
+    }
+
+    const hashChave = calcularHashChave(CHAVE_API_EXEMPLO);
+    const jaExiste = await prisma.chaveApi.findUnique({ where: { hashChave } });
+    const outraAtiva = await prisma.chaveApi.findFirst({ where: { organizacaoId: techCorp.id, ativo: true } });
+
+    // Chave de exemplo criada antes de existirem todas as permissões: completa as que faltam.
+    if (jaExiste && jaExiste.permissoes.length < Object.values(PermissaoApi).length) {
+        await prisma.chaveApi.update({ where: { id: jaExiste.id }, data: { permissoes: Object.values(PermissaoApi) } });
+        console.log("Chave de API de exemplo: permissões atualizadas.");
+        return;
+    }
+
+    if (jaExiste || outraAtiva) {
+        console.log("Chave de API de exemplo já existe (ou a TechCorp tem outra ativa), nada foi alterado.");
+        return;
+    }
+
+    const admin = await prisma.usuario.findUniqueOrThrow({ where: { login: process.env.ADMIN_LOGIN! } });
+
+    await executarTransacao(admin.id, async (tx) => {
+        await chaveApiRepository.criarChave(tx, {
+            organizacaoId: techCorp.id,
+            hashChave,
+            prefixo: CHAVE_API_EXEMPLO.slice(0, 7),
+            permissoes: Object.values(PermissaoApi),
+            limitePorMinuto: 100,
+        });
+    });
+
+    console.log("Chave de API de exemplo da TechCorp criada.");
+}
+
+// Um lote avisado pela API pública que ainda não chegou (AGUARDANDO_RECEBIMENTO),
+// para testar a confirmação de recebimento (PATCH /lotes/:id/confirmar-recebimento).
+async function criarAvisoDeExemplo() {
+    const techCorp = await prisma.organizacao.findUnique({ where: { cnpj: "52601815000120" } });
+    const contaServico = await prisma.usuario.findUnique({ where: { login: LOGIN_CONTA_SERVICO } });
+    const jaExiste = await prisma.lote.findFirst({ where: { notaFiscal: "NF-1003" } });
+
+    if (!techCorp || !contaServico || jaExiste) {
+        return;
+    }
+
+    await loteService.criarAvisoDeEnvio(
+        { organizacaoId: techCorp.id, notaFiscal: "NF-1003", transportadora: "TransLog", observacoes: "Aviso enviado pelo sistema da TechCorp", dataPrevistaChegada: dia(3) },
+        [equipamento("NOTEBOOK", "Dell", 2.2), equipamento("MONITOR", "Samsung", 4.1)],
+        contaServico.id,
+        "Entrada no lote pela API pública (chave gc_exem)",
+    );
+
+    console.log("Lote de exemplo aguardando recebimento (NF-1003) criado.");
+}
+
 async function criarParametros() {
     const quantidade = await prisma.parametros.count();
 
@@ -108,10 +203,11 @@ function equipamento(tipo: DadosEquipamentoNovo["tipo"], marca: string, peso: nu
     };
 }
 
-async function mover(idAdmin: string, ids: string[], novoStatus: StatusRastreamento, destinoId: string | null) {
+async function mover(idAdmin: string, ids: string[], novoStatus: StatusRastreamento, destinoId: string | null, valorRecuperacao: number | null = null) {
     await equipamentoService.movimentarVarios(ids, {
         novoStatus,
         destinoId,
+        valorRecuperacao,
         observacao: null,
         idUsuario: idAdmin,
     });
@@ -160,8 +256,8 @@ async function criarDadosDeExemplo() {
     const [notebook, monitor, impressora] = finalizado.equipamentos.map((item) => item.id);
     await mover(idAdmin, [notebook!, monitor!, impressora!], "EM_TRIAGEM", null);
     await equipamentoService.avaliar(monitor!, 2, "DANIFICADO_GRAVE", "Tela trincada na chegada", idAdmin);
-    await mover(idAdmin, [notebook!], "PECAS_REAPROVEITADAS", ecoPecas.id);
-    await mover(idAdmin, [monitor!], "MATERIAL_RECICLAVEL", recicla.id);
+    await mover(idAdmin, [notebook!], "PECAS_REAPROVEITADAS", ecoPecas.id, 180);
+    await mover(idAdmin, [monitor!], "MATERIAL_RECICLAVEL", recicla.id, 12.5);
     await mover(idAdmin, [impressora!], "DESCARTE_SEGURO", recicla.id);
     await mover(idAdmin, [notebook!, monitor!, impressora!], "BAIXA_DEFINITIVA", null);
 
@@ -195,8 +291,12 @@ async function criarDadosDeExemplo() {
 async function main() {
     await criarDepartamentos();
     await criarAdministrador();
+    await criarContaDeServico();
     await criarParametros();
     await criarDadosDeExemplo();
+    await criarChaveDeExemplo();
+    await criarAvisoDeExemplo();
+    await criarHistoricoDeExemplo();
 }
 
 try {

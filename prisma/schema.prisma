@@ -15,6 +15,7 @@ enum PapelUsuario {
 }
 
 enum StatusLote {
+  AGUARDANDO_RECEBIMENTO
   RECEBIDO
   EM_TRIAGEM
   TRIAGEM_CONCLUIDA
@@ -56,6 +57,59 @@ enum TipoEquipamento {
   FONTE_ALIMENTACAO
 }
 
+// Defeitos encontrados na triagem ou no desmonte (usados na previsão de vida útil).
+enum TipoFalha {
+  NAO_LIGA
+  TELA_DANIFICADA
+  BATERIA_VICIADA
+  PLACA_MAE
+  ARMAZENAMENTO
+  MEMORIA
+  FONTE
+  SUPERAQUECIMENTO
+  CARCACA_QUEBRADA
+  TECLADO_PERIFERICOS
+  CONECTORES_PORTAS
+  OXIDACAO_CORROSAO
+  OUTRO
+}
+
+enum GravidadeFalha {
+  LEVE
+  MODERADA
+  GRAVE
+}
+
+// Relatórios analíticos (AV3).
+enum TipoRelatorio {
+  EFICIENCIA
+  RENTABILIDADE
+  VIDA_UTIL
+  VIDA_UTIL_INVENTARIO // previsão para a lista de equipamentos que o parceiro ainda usa
+}
+
+// Quem pediu: um funcionário, a API pública ou o agendamento automático.
+enum OrigemRelatorio {
+  INTERNO
+  API
+  AGENDADO
+}
+
+// Situação do pedido na fila (passo 6). Relatório gerado na hora já nasce CONCLUIDO.
+enum StatusRelatorio {
+  PENDENTE
+  PROCESSANDO
+  CONCLUIDO
+  FALHOU
+}
+
+enum PermissaoApi {
+  LER_RASTREABILIDADE
+  GERENCIAR_LOTES
+  GERAR_RELATORIOS
+  ATUALIZAR_CADASTRO
+}
+
 model Organizacao {
   id                String   @id @default(uuid()) @db.Uuid
   razaoSocial       String
@@ -68,8 +122,26 @@ model Organizacao {
   ativo             Boolean  @default(true)
   versao            Int      @default(1)
 
-  contratos Contrato[]
-  lotes     Lote[]
+  contratos  Contrato[]
+  lotes      Lote[]
+  chavesApi  ChaveApi[]
+  relatorios RelatorioGerado[]
+}
+
+model ChaveApi {
+  id              String         @id @default(uuid()) @db.Uuid
+  organizacaoId   String         @db.Uuid
+  hashChave       String         @unique
+  prefixo         String
+  permissoes      PermissaoApi[]
+  // Requisições por minuto permitidas para esta chave (conforme o contrato).
+  limitePorMinuto Int            @default(100)
+  dataCriacao     DateTime       @default(now())
+  ativo           Boolean        @default(true)
+  // Preenchida quando uma chave nova substitui esta: ela ainda vale até essa hora.
+  expiraEm        DateTime?
+
+  organizacao Organizacao @relation(fields: [organizacaoId], references: [id])
 }
 
 model Contrato {
@@ -87,7 +159,10 @@ model Contrato {
 
 model Lote {
   id                  String     @id @default(uuid()) @db.Uuid
-  dataEntrada         DateTime   @db.Date
+  // Vazia enquanto o lote enviado pela API aguarda recebimento; o gestor preenche ao confirmar.
+  dataEntrada         DateTime?  @db.Date
+  // Informada pelo parceiro ao avisar o envio (opcional), para o almoxarifado se planejar.
+  dataPrevistaChegada DateTime?  @db.Date
   organizacaoId       String     @db.Uuid
   notaFiscal          String
   transportadora      String
@@ -114,11 +189,34 @@ model Equipamento {
   posicaoNoLote          Int
   statusRastreamento     StatusRastreamento @default(AGUARDANDO_TRIAGEM)
   destinoId              String?            @db.Uuid
+  // Quanto o parceiro de destino pagou pelo equipamento (peças ou material).
+  // Informado pelo gestor ao mandar para o destino; vazio antes disso.
+  valorRecuperacao       Decimal?           @db.Decimal(12, 2)
   versao                 Int                @default(1)
 
   lote                  Lote           @relation(fields: [loteId], references: [id])
   destino               Destino?       @relation(fields: [destinoId], references: [id])
   historicoMovimentacao Movimentacao[]
+  falhas                Falha[]
+}
+
+// Falha (defeito) registrada pelo gestor. Não é editada nem apagada: se foi registrada
+// por engano, é anulada com justificativa (o relatório ignora as anuladas).
+model Falha {
+  id                    String         @id @default(uuid()) @db.Uuid
+  equipamentoId         String         @db.Uuid
+  tipo                  TipoFalha
+  gravidade             GravidadeFalha
+  descricao             String?
+  dataRegistro          DateTime       @default(now())
+  responsavelId         String         @db.Uuid
+  anulada               Boolean        @default(false)
+  justificativaAnulacao String?
+  dataAnulacao          DateTime?
+  versao                Int            @default(1)
+
+  equipamento Equipamento @relation(fields: [equipamentoId], references: [id])
+  responsavel Usuario     @relation(fields: [responsavelId], references: [id])
 }
 
 model Movimentacao {
@@ -156,6 +254,8 @@ model Usuario {
   bloqueadoAte       DateTime?
 
   movimentacoes Movimentacao[]
+  falhas        Falha[]
+  relatorios    RelatorioGerado[]
 }
 
 model Destino {
@@ -206,4 +306,50 @@ model Auditoria {
   dadosAntes  Json?
   dadosDepois Json?
   dataHora    DateTime @default(now())
+}
+
+// Cada execução de um relatório analítico. Nunca é alterada depois de concluída:
+// relatórios antigos ficam disponíveis para consulta histórica.
+// O resultado completo fica em JSON (cada relatório tem um formato diferente).
+model RelatorioGerado {
+  id              String          @id @default(uuid()) @db.Uuid
+  tipo            TipoRelatorio
+  origem          OrigemRelatorio
+  status          StatusRelatorio @default(PENDENTE)
+  // Parâmetros do pedido (período, organização, lista de equipamentos do parceiro...).
+  parametros      Json
+  periodoInicio   DateTime?       @db.Date
+  periodoFim      DateTime?       @db.Date
+  // Preenchida quando o relatório é só de uma organização (pedido do parceiro ou filtro).
+  organizacaoId   String?         @db.Uuid
+  solicitadoPorId String?         @db.Uuid
+  dataPedido      DateTime        @default(now())
+  dataConclusao   DateTime?
+  tentativas      Int             @default(0)
+  erro            String?
+  resultado       Json?
+
+  organizacao   Organizacao?       @relation(fields: [organizacaoId], references: [id])
+  solicitadoPor Usuario?           @relation(fields: [solicitadoPorId], references: [id])
+  previsoes     PrevisaoVidaUtil[]
+}
+
+// Uma linha por tipo de equipamento em cada relatório de vida útil.
+// Fica em colunas (não só no JSON) para dar para comparar as previsões ao longo do tempo
+// com o que aconteceu de verdade e ver se o modelo está melhorando.
+model PrevisaoVidaUtil {
+  id                   String          @id @default(uuid()) @db.Uuid
+  relatorioId          String          @db.Uuid
+  tipoEquipamento      TipoEquipamento
+  amostras             Int
+  // Reta da regressão: desgaste = intercepto + coeficienteAngular × idade
+  coeficienteAngular   Float?
+  intercepto           Float?
+  r2                   Float?
+  limiarInservivel     Float?
+  vidaUtilPrevistaAnos Float?
+  vidaUtilContabilAnos Float?
+  dataPrevisao         DateTime        @default(now())
+
+  relatorio RelatorioGerado @relation(fields: [relatorioId], references: [id])
 }

@@ -4,6 +4,7 @@ import * as relatorioRepository from "../repositories/relatorioRepository.js";
 import * as organizacaoRepository from "../repositories/organizacaoRepository.js";
 import * as loteService from "./loteService.js";
 import * as parametrosRepository from "../repositories/parametrosRepository.js";
+import { foiDesfeita } from "../utils/correcoes.js";
 
 const UM_DIA = 24 * 60 * 60 * 1000;
 
@@ -65,21 +66,6 @@ async function buscarOrganizacaoDoRelatorio(organizacaoId: string | undefined) {
     }
 
     return { razaoSocial: organizacao.razaoSocial, cnpj: organizacao.cnpj };
-}
-
-interface Correcao {
-    equipamentoId: string;
-    desfezDesde: Date;
-    dataHora: Date;
-}
-
-// Uma movimentação foi desfeita se uma correção posterior voltou para antes dela.
-function foiDesfeita(movimentacao: { equipamentoId: string; dataHora: Date }, correcoes: Correcao[]) {
-    return correcoes.some((correcao) => {
-        return correcao.equipamentoId === movimentacao.equipamentoId
-            && correcao.desfezDesde <= movimentacao.dataHora
-            && movimentacao.dataHora < correcao.dataHora;
-    });
 }
 
 export async function relatorioDestinacao(organizacaoId: string | undefined, inicio: Date, fim: Date) {

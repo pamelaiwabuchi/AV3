@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import { validarCnpj } from "../src/utils/cnpj.js";
 import { calcularStatusLote, podeMudarStatus } from "../src/utils/regrasStatus.js";
 import { validarForcaSenha } from "../src/services/authService.js";
+import { calcularHashChave, gerarChaveApi } from "../src/utils/chaveApi.js";
+import { regressaoLinear, resumir } from "../src/utils/estatistica.js";
+import { preverInventario } from "../src/services/analise/vidaUtilService.js";
+import type { PrevisaoDoTipo } from "../src/services/analise/vidaUtilService.js";
 
 test("CNPJ válido com ou sem máscara vira só números", () => {
     assert.equal(validarCnpj("11.222.333/0001-81"), "11222333000181");
@@ -36,4 +40,52 @@ test("status do lote é calculado pelos equipamentos, ignorando os cancelados", 
     assert.equal(calcularStatusLote(["AGUARDANDO_DESMONTE", "MATERIAL_RECICLAVEL"]), "TRIAGEM_CONCLUIDA");
     assert.equal(calcularStatusLote(["PECAS_REAPROVEITADAS", "BAIXA_DEFINITIVA"]), "ENCAMINHADO");
     assert.equal(calcularStatusLote(["BAIXA_DEFINITIVA", "CANCELADO"]), "FINALIZADO");
+});
+
+test("chave de API: formato gc_ + 64 caracteres, prefixo e hash que dá para conferir", () => {
+    const { chave, hash, prefixo } = gerarChaveApi();
+
+    assert.match(chave, /^gc_[0-9a-f]{64}$/);
+    assert.equal(prefixo, chave.slice(0, 7));
+    assert.equal(hash, calcularHashChave(chave));
+    assert.notEqual(hash, chave);
+    assert.notEqual(gerarChaveApi().chave, chave);
+});
+
+test("estatística: resumo de uma lista e lista vazia", () => {
+    const resumo = resumir([2, 4, 4, 4, 5, 5, 7, 9]);
+
+    assert.equal(resumo.quantidade, 8);
+    assert.equal(resumo.media, 5);
+    assert.equal(resumo.mediana, 4.5);
+    assert.equal(resumo.desvioPadrao, 2);
+    assert.equal(resumir([]).media, 0);
+});
+
+test("regressão linear: reta exata, R² = 1, e sem reta quando todo x é igual", () => {
+    // Pontos em cima da reta y = 1 + 0,5x
+    const reta = regressaoLinear([[0, 1], [2, 2], [4, 3], [6, 4]]);
+
+    assert.ok(reta);
+    assert.equal(reta.coeficienteAngular, 0.5);
+    assert.equal(reta.intercepto, 1);
+    assert.equal(reta.r2, 1);
+    assert.equal(regressaoLinear([[3, 1], [3, 2]]), null);
+});
+
+test("inventário do parceiro: anos restantes, ano previsto e situação", () => {
+    const anoAtual = new Date().getFullYear();
+    const previsoes = [{ tipoEquipamento: "NOTEBOOK", vidaUtilPrevistaAnos: 8 }] as PrevisaoDoTipo[];
+    const itens = [
+        { tipo: "NOTEBOOK" as const, anoFabricacao: anoAtual - 10 },
+        { tipo: "NOTEBOOK" as const, anoFabricacao: anoAtual - 7 },
+        { tipo: "NOTEBOOK" as const, anoFabricacao: anoAtual - 2 },
+        { tipo: "MONITOR" as const, anoFabricacao: anoAtual - 2 },
+    ];
+    const resultado = preverInventario(itens, previsoes);
+    const situacoes = resultado.equipamentos.map((item) => item.situacao);
+
+    assert.deepEqual(situacoes, ["VIDA_UTIL_ESGOTADA", "TROCAR_EM_ATE_1_ANO", "EM_USO_NORMAL", "SEM_PREVISAO"]);
+    assert.equal(resultado.equipamentos[2]!.anosRestantes, 6);
+    assert.equal(resultado.equipamentos[2]!.anoPrevistoInservivel, anoAtual - 2 + 8);
 });

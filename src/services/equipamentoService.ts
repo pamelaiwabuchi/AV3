@@ -1,5 +1,5 @@
 import type { Equipamento, Parametros } from "../generated/prisma/client.js";
-import type { TipoEquipamento } from "../generated/prisma/enums.js";
+import type { StatusRastreamento, TipoEquipamento } from "../generated/prisma/enums.js";
 import { EstadoFisico } from "../generated/prisma/enums.js";
 import type { Transacao } from "../lib/transacao.js";
 import { executarTransacao } from "../lib/transacao.js";
@@ -13,7 +13,7 @@ import * as movimentacaoService from "./movimentacaoService.js";
 import type { DadosEquipamento, FiltrosEquipamento } from "../repositories/equipamentoRepository.js";
 import type { PedidoMudanca } from "./movimentacaoService.js";
 
-function taxaDeDepreciacao(tipo: TipoEquipamento, parametros: Parametros) {
+export function taxaDeDepreciacao(tipo: TipoEquipamento, parametros: Parametros) {
     const taxas: Record<TipoEquipamento, unknown> = {
         COMPUTADOR_MESA: parametros.depreciacaoComputadorMesa,
         NOTEBOOK: parametros.depreciacaoNotebook,
@@ -77,6 +77,29 @@ async function resolverDestino(equipamento: Equipamento, pedido: PedidoMudanca) 
     return destino.id;
 }
 
+// Destinos que pagam pelo equipamento: o valor é obrigatório.
+const STATUS_COM_VALOR: StatusRastreamento[] = ["PECAS_REAPROVEITADAS", "MATERIAL_RECICLAVEL"];
+
+// Valor de recuperação depois da movimentação:
+// - peças ou material reciclável: obrigatório (quanto o parceiro pagou);
+// - descarte seguro: opcional, padrão 0 (ninguém paga por lixo);
+// - outros status: continua o que já estava (ex.: a BAIXA_DEFINITIVA não apaga o valor).
+function resolverValor(equipamento: Equipamento, pedido: PedidoMudanca) {
+    if (STATUS_COM_VALOR.includes(pedido.novoStatus)) {
+        if (pedido.valorRecuperacao === null) {
+            throw new ErroRegraNegocio(`Informe o valorRecuperacao (quanto o parceiro pagou) para mover para ${pedido.novoStatus}`);
+        }
+
+        return pedido.valorRecuperacao;
+    }
+
+    if (pedido.novoStatus === "DESCARTE_SEGURO") {
+        return pedido.valorRecuperacao ?? 0;
+    }
+
+    return equipamento.valorRecuperacao === null ? null : Number(equipamento.valorRecuperacao);
+}
+
 async function garantirQueNaoEhOUltimo(tx: Transacao, equipamento: Equipamento) {
     const doLote = await equipamentoRepository.listarEquipamentosDoLote(tx, equipamento.loteId);
     const outrosAtivos = doLote.filter((outro) => outro.id !== equipamento.id && outro.statusRastreamento !== "CANCELADO");
@@ -86,8 +109,22 @@ async function garantirQueNaoEhOUltimo(tx: Transacao, equipamento: Equipamento) 
     }
 }
 
+// Lote avisado pela API e ainda não recebido: os equipamentos não estão aqui,
+// então não dá para avaliar nem movimentar (só cancelar, se o parceiro desistir).
+async function garantirLoteJaRecebido(loteId: string, db?: Transacao) {
+    const lote = await loteRepository.buscarLotePorId(loteId, db);
+
+    if (lote?.statusProcessamento === "AGUARDANDO_RECEBIMENTO") {
+        throw new ErroRegraNegocio("O lote ainda não chegou: confirme o recebimento do lote antes de avaliar ou movimentar os equipamentos");
+    }
+}
+
 async function aplicarMovimentacao(tx: Transacao, equipamento: Equipamento, versao: number, pedido: PedidoMudanca) {
     const atual = equipamento.statusRastreamento;
+
+    if (pedido.novoStatus !== "CANCELADO") {
+        await garantirLoteJaRecebido(equipamento.loteId, tx);
+    }
 
     if (!podeMudarStatus(atual, pedido.novoStatus)) {
         throw new ErroRegraNegocio(`O equipamento ${equipamento.codigoBarrasInterno} não pode ir de ${atual} para ${pedido.novoStatus}`);
@@ -98,7 +135,8 @@ async function aplicarMovimentacao(tx: Transacao, equipamento: Equipamento, vers
     }
 
     const destinoId = await resolverDestino(equipamento, pedido);
-    await movimentacaoService.registrarMudancaDeStatus(tx, equipamento, versao, { ...pedido, destinoId });
+    const valorRecuperacao = resolverValor(equipamento, pedido);
+    await movimentacaoService.registrarMudancaDeStatus(tx, equipamento, versao, { ...pedido, destinoId, valorRecuperacao });
 }
 
 export async function listar(pagina: number, filtros: FiltrosEquipamento) {
@@ -149,6 +187,8 @@ export async function avaliar(id: string, versao: number, estadoFisico: EstadoFi
     if (ehStatusFinal(equipamento.statusRastreamento)) {
         throw new ErroRegraNegocio(`Não é possível avaliar um equipamento em ${equipamento.statusRastreamento}`);
     }
+
+    await garantirLoteJaRecebido(equipamento.loteId);
 
     const ordem: string[] = Object.values(EstadoFisico);
     const niveisQueCaiu = ordem.indexOf(estadoFisico) - ordem.indexOf(equipamento.estadoFisico);
@@ -225,10 +265,14 @@ export async function corrigir(id: string, versao: number, pedido: PedidoCorreca
 
         const historico = await movimentacaoService.listarHistorico(id, tx);
         const { escolhida, statusAnterior } = escolherMovimentacao(historico, pedido.movimentacaoId);
-        const destinoId = STATUS_COM_DESTINO.includes(statusAnterior) ? equipamento.destinoId : null;
+        const voltaParaDestino = STATUS_COM_DESTINO.includes(statusAnterior);
+        const destinoId = voltaParaDestino ? equipamento.destinoId : null;
+        // Voltou para antes do destino: o valor recebido também sai (a auditoria guarda o antigo).
+        const valorAtual = equipamento.valorRecuperacao === null ? null : Number(equipamento.valorRecuperacao);
+        const valorRecuperacao = voltaParaDestino ? valorAtual : null;
         const observacao = await montarObservacaoDaCorrecao(pedido.justificativa, equipamento.destinoId, destinoId);
 
-        garantirAtualizou(await equipamentoRepository.atualizarStatusEquipamento(tx, id, versao, statusAnterior, destinoId));
+        garantirAtualizou(await equipamentoRepository.atualizarStatusEquipamento(tx, id, versao, statusAnterior, destinoId, valorRecuperacao));
         await movimentacaoService.registrarCorrecao(tx, {
             equipamentoId: id,
             origem: equipamento.statusRastreamento,

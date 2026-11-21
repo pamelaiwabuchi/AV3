@@ -63,6 +63,12 @@ export async function buscarOrganizacaoPorId(id: string) {
     return prisma.organizacao.findUnique({ where: { id } });
 }
 
+// Trava a linha da organização até o fim da transação (igual ao travarLote).
+// Usado ao gerar chave de API: duas gerações ao mesmo tempo esperam uma pela outra.
+export async function travarOrganizacao(tx: Transacao, id: string) {
+    await tx.$executeRaw`SELECT id FROM "Organizacao" WHERE id = ${id}::uuid FOR UPDATE`;
+}
+
 export async function buscarOrganizacaoPorCnpj(cnpj: string) {
     return prisma.organizacao.findUnique({ where: { cnpj } });
 }

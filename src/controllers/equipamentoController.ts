@@ -49,6 +49,7 @@ interface CorpoAvaliar {
 interface CorpoMovimentar {
     novoStatus: StatusRastreamento;
     destinoId?: string;
+    valorRecuperacao?: number;
     observacao?: string;
     versao: number;
 }
@@ -63,6 +64,7 @@ interface CorpoMovimentarVarios {
     codigos: string[];
     novoStatus: StatusRastreamento;
     destinoId?: string;
+    valorRecuperacao?: number;
     observacao?: string;
 }
 
@@ -135,6 +137,8 @@ const esquemaAvaliar = {
 const camposMovimentacao = {
     novoStatus: statusRastreamento,
     destinoId: { type: "string", format: "uuid" },
+    // Obrigatório para PECAS_REAPROVEITADAS e MATERIAL_RECICLAVEL (em reais, por equipamento).
+    valorRecuperacao: { type: "number", minimum: 0 },
     observacao: textoObrigatorio,
 };
 
@@ -293,8 +297,8 @@ export async function equipamentoController(app: FastifyInstance) {
     });
 
     app.post<{ Params: ParametrosId; Body: CorpoMovimentar }>("/equipamentos/:id/movimentar", opcoesMovimentar, async (request) => {
-        const { novoStatus, destinoId, observacao, versao } = request.body;
-        const pedido = { novoStatus, destinoId: destinoId ?? null, observacao: observacao ?? null, idUsuario: request.user.id };
+        const { novoStatus, destinoId, valorRecuperacao, observacao, versao } = request.body;
+        const pedido = { novoStatus, destinoId: destinoId ?? null, valorRecuperacao: valorRecuperacao ?? null, observacao: observacao ?? null, idUsuario: request.user.id };
 
         return equipamentoService.movimentar(request.params.id, versao, pedido);
     });
@@ -307,15 +311,15 @@ export async function equipamentoController(app: FastifyInstance) {
     });
 
     app.post<{ Params: ParametrosCodigo; Body: CorpoMovimentar }>("/equipamentos/codigo/:codigo/movimentar", opcoesMovimentarPorCodigo, async (request) => {
-        const { novoStatus, destinoId, observacao, versao } = request.body;
-        const pedido = { novoStatus, destinoId: destinoId ?? null, observacao: observacao ?? null, idUsuario: request.user.id };
+        const { novoStatus, destinoId, valorRecuperacao, observacao, versao } = request.body;
+        const pedido = { novoStatus, destinoId: destinoId ?? null, valorRecuperacao: valorRecuperacao ?? null, observacao: observacao ?? null, idUsuario: request.user.id };
 
         return equipamentoService.movimentarPorCodigo(request.params.codigo, versao, pedido);
     });
 
     app.post<{ Body: CorpoMovimentarVarios }>("/equipamentos/movimentar-varios", opcoesMovimentarVarios, async (request) => {
-        const { codigos, novoStatus, destinoId, observacao } = request.body;
-        const pedido = { novoStatus, destinoId: destinoId ?? null, observacao: observacao ?? null, idUsuario: request.user.id };
+        const { codigos, novoStatus, destinoId, valorRecuperacao, observacao } = request.body;
+        const pedido = { novoStatus, destinoId: destinoId ?? null, valorRecuperacao: valorRecuperacao ?? null, observacao: observacao ?? null, idUsuario: request.user.id };
 
         return equipamentoService.movimentarVariosPorCodigo(codigos, pedido);
     });

@@ -10,17 +10,18 @@ import * as movimentacaoRepository from "../repositories/movimentacaoRepository.
 export interface PedidoMudanca {
     novoStatus: StatusRastreamento;
     destinoId: string | null;
+    valorRecuperacao: number | null;
     observacao: string | null;
     idUsuario: string;
 }
 
-export async function registrarEntrada(tx: Transacao, equipamentoId: string, idUsuario: string) {
+export async function registrarEntrada(tx: Transacao, equipamentoId: string, idUsuario: string, observacao = "Entrada no lote") {
     await movimentacaoRepository.criarMovimentacao(tx, {
         equipamentoId,
         origem: null,
         destino: "AGUARDANDO_TRIAGEM",
         responsavelId: idUsuario,
-        observacao: "Entrada no lote",
+        observacao,
     });
 }
 
@@ -31,6 +32,7 @@ export async function registrarMudancaDeStatus(tx: Transacao, equipamento: Equip
         versao,
         pedido.novoStatus,
         pedido.destinoId,
+        pedido.valorRecuperacao,
     );
 
     if (!atualizou) {
@@ -50,7 +52,8 @@ export async function recalcularStatusLote(tx: Transacao, loteId: string) {
     await loteRepository.travarLote(tx, loteId);
     const lote = await loteRepository.buscarLotePorId(loteId, tx);
 
-    if (!lote || lote.statusProcessamento === "CANCELADO") {
+    // Cancelado não muda mais; aguardando recebimento só muda quando o gestor confirma.
+    if (!lote || lote.statusProcessamento === "CANCELADO" || lote.statusProcessamento === "AGUARDANDO_RECEBIMENTO") {
         return;
     }
 
