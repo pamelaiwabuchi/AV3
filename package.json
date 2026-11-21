@@ -9,6 +9,7 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "test": "tsx --test tests/*.test.ts",
+    "test:docker": "tsx --env-file=.env.docker --test tests/*.test.ts",
     "worker": "tsx src/worker.ts",
     "worker:prod": "node dist/worker.js"
   },

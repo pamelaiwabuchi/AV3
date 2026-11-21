@@ -81,7 +81,7 @@ Os comandos são os mesmos no Linux e no Windows. O `.env` é opcional: sem ele,
 
 O `docker compose up` cria três contêineres:
 
-- **banco**: PostgreSQL 18, sem porta aberta para fora (só a API fala com ele). Os dados ficam no volume `dados-banco`.
+- **banco**: PostgreSQL 18. A porta fica aberta só no próprio computador (`127.0.0.1`), na **5433** (e não na 5432, para não brigar com um PostgreSQL já instalado), para o `npm run test:docker` poder usar. Os dados ficam no volume `dados-banco`.
 - **redis**: Redis 7, a fila de tarefas. A porta 6379 fica aberta só no próprio computador (`127.0.0.1`), para o `npm run dev` poder usar. As tarefas ficam no volume `dados-fila` e sobrevivem a reinícios.
 - **api**: montada pelo `Dockerfile`. Só liga quando o banco e o Redis respondem (healthcheck). Ao ligar, aplica as migrações, roda o seed (que não duplica dados) e sobe o servidor na porta 3333, já com os workers da fila.
 
@@ -93,6 +93,7 @@ Para conferir: <http://localhost:3333/health>.
 | `docker compose down` | Desliga (mantém os dados) |
 | `docker compose down -v` | Desliga e **apaga** o banco e a fila do Docker |
 | `docker compose up -d redis` | Sobe **só o Redis** (para usar com o `npm run dev`) |
+| `npm install` e depois `npm run test:docker` | Roda os testes automatizados contra o banco e o Redis do Docker ([seção 11](#11-testes)) |
 
 > Não rode a API do Docker e o `npm run dev` ao mesmo tempo: os dois usam a porta 3333.
 
@@ -639,6 +640,18 @@ Itens pedidos nos enunciados e onde estão:
 
 ## 11. Testes
 
+**Com Docker** (não precisa instalar o PostgreSQL nem o Redis, só o Node.js):
+
+```bash
+docker compose up -d --build
+npm install
+npm run test:docker
+```
+
+Espere a API do Docker terminar de ligar antes de rodar os testes (<http://localhost:3333/health> responde), porque é ela que aplica as migrações e o seed no banco. O `test:docker` lê o arquivo `.env.docker`, que aponta para o banco do Docker (`localhost:5433`) e para o Redis (`localhost:6379`); o seu `.env`, se existir, não é usado.
+
+**Sem Docker** (PostgreSQL e Redis instalados, `.env` configurado):
+
 ```bash
 npm test
 ```
@@ -648,7 +661,7 @@ São 39 testes automatizados (Node test runner):
 - `tests/regras.test.ts`: regras puras, sem banco (CNPJ, senha, transições de status, status do lote, chave de API, estatística, regressão linear, previsão do inventário, CSV, assinatura do webhook).
 - `tests/api.test.ts`: requisições à API com `app.inject`, usando os dados do seed. Conferem permissões, validação, filtros, auditoria sem segredos, a proteção do trigger e, na API pública: 401 sem chave, isolamento entre organizações (404), histórico sem funcionário e sem valor, pedido de relatório em fila (202), rentabilidade proibida, webhook só https e o limite de requisições (429).
 
-> Rode o `npx prisma db seed` antes e deixe o **Redis ligado** (`docker compose up -d redis`): o teste do pedido em fila coloca uma tarefa no Redis. Os testes de API só fazem consultas (ou apagam o que criaram, no caso dos relatórios), porque Auditoria e Movimentacao não podem ser apagadas. O fluxo de escrita completo é exercitado pelo seed, que usa os services do sistema.
+> Sem Docker, rode o `npx prisma db seed` antes e deixe o **Redis ligado** (`docker compose up -d redis`); se o Redis estiver desligado, os testes ficam parados esperando por ele, em vez de falhar. O teste do pedido em fila coloca uma tarefa no Redis. Os testes de API só fazem consultas (ou apagam o que criaram, no caso dos relatórios), porque Auditoria e Movimentacao não podem ser apagadas. O fluxo de escrita completo é exercitado pelo seed, que usa os services do sistema.
 
 ---
 
