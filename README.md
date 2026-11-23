@@ -661,7 +661,7 @@ São 39 testes automatizados (Node test runner):
 - `tests/regras.test.ts`: regras puras, sem banco (CNPJ, senha, transições de status, status do lote, chave de API, estatística, regressão linear, previsão do inventário, CSV, assinatura do webhook).
 - `tests/api.test.ts`: requisições à API com `app.inject`, usando os dados do seed. Conferem permissões, validação, filtros, auditoria sem segredos, a proteção do trigger e, na API pública: 401 sem chave, isolamento entre organizações (404), histórico sem funcionário e sem valor, pedido de relatório em fila (202), rentabilidade proibida, webhook só https e o limite de requisições (429).
 
-> Sem Docker, rode o `npx prisma db seed` antes e deixe o **Redis ligado** (`docker compose up -d redis`); se o Redis estiver desligado, os testes ficam parados esperando por ele, em vez de falhar. O teste do pedido em fila coloca uma tarefa no Redis. Os testes de API só fazem consultas (ou apagam o que criaram, no caso dos relatórios), porque Auditoria e Movimentacao não podem ser apagadas. O fluxo de escrita completo é exercitado pelo seed, que usa os services do sistema.
+> Sem Docker, rode o `npx prisma db seed` antes e deixe o **Redis ligado** (`docker compose up -d redis`); se o Redis estiver desligado, o teste do pedido em fila é pulado (aparece como `skipped`, com o aviso "Redis desligado") e os outros rodam normalmente. O teste do pedido em fila coloca uma tarefa no Redis. Os testes de API só fazem consultas (ou apagam o que criaram, no caso dos relatórios), porque Auditoria e Movimentacao não podem ser apagadas. O fluxo de escrita completo é exercitado pelo seed, que usa os services do sistema.
 
 ---
 

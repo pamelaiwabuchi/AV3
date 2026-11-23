@@ -6,6 +6,7 @@ import { prisma } from "../src/lib/prisma.js";
 import { PREFIXO_INTERNO, PREFIXO_PUBLICO } from "../src/utils/prefixos.js";
 import { CHAVE_API_EXEMPLO } from "../src/utils/esquemas.js";
 import { fecharFilas, removerTarefaDeRelatorio } from "../src/lib/fila.js";
+import net from "node:net";
 
 // Estes testes usam os dados do seed (npx prisma db seed) e só fazem consultas,
 // para não deixar registros no banco (Auditoria e Movimentacao não podem ser apagadas).
@@ -26,6 +27,32 @@ function pedir(url: string, tokenUsado: string) {
 // Rota pública com a chave de exemplo da TechCorp (criada pelo seed).
 function pedirComChave(url: string, chave = CHAVE_API_EXEMPLO) {
     return app.inject({ url: PREFIXO_PUBLICO + url, headers: { "x-api-key": chave } });
+}
+
+// Confere se o Redis está ligado, abrindo uma conexão rápida com a porta dele.
+// Sem isso, o teste da fila ficaria parado esperando o Redis para sempre.
+function redisRespondendo(): Promise<boolean> {
+    const endereco = new URL(process.env.REDIS_URL ?? "redis://localhost:6379");
+    const porta = Number(endereco.port || 6379);
+
+    return new Promise((resolver) => {
+        const conexao = net.connect({ host: endereco.hostname, port: porta });
+        conexao.setTimeout(1000);
+
+        conexao.once("connect", () => {
+            conexao.end();
+            resolver(true);
+        });
+
+        conexao.once("error", () => {
+            resolver(false);
+        });
+
+        conexao.once("timeout", () => {
+            conexao.destroy();
+            resolver(false);
+        });
+    });
 }
 
 before(async () => {
@@ -273,7 +300,12 @@ test("relatório de vida útil: gestor gera e fica guardado com as previsões; g
     await prisma.relatorioGerado.delete({ where: { id: relatorio.id } });
 });
 
-test("API pública: pedido de relatório responde 202 na hora e fica na fila (precisa do Redis)", async () => {
+test("API pública: pedido de relatório responde 202 na hora e fica na fila (precisa do Redis)", async (t) => {
+    if (!(await redisRespondendo())) {
+        t.skip("Redis desligado: rode docker compose up -d redis");
+        return;
+    }
+
     const itens = [{ identificador: "PAT-1", tipo: "NOTEBOOK", anoFabricacao: 2019 }];
     const resposta = await app.inject({
         method: "POST",
